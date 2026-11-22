@@ -7,6 +7,8 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -32,8 +34,8 @@ data class AudioPreviewState(
  * Lightweight audio-only preview player for "Test Dengar 10 Detik".
  *
  * Uses Media3 ExoPlayer with [DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON]
- * (automatically leveraging Jellyfin's FFmpeg audio-only decoder for AC3/EAC3/DTS/TrueHD)
- * and disables the video track completely so playback uses minimal CPU/RAM.
+ * (automatically leveraging Jellyfin's FFmpeg audio-only decoder for AC3/EAC3/DTS/TrueHD),
+ * disables the video track, and routes playback to the exact [selectedAudioIndex] chosen by the user.
  */
 @OptIn(UnstableApi::class)
 class AudioPreviewPlayer(
@@ -46,6 +48,8 @@ class AudioPreviewPlayer(
 
     private var player: ExoPlayer? = null
     private var preparedUri: Uri? = null
+    private var desiredAudioIndex: Int = 0
+    private var appliedAudioIndex: Int = -1
     private var tickerJob: Job? = null
 
     private val _state = MutableStateFlow(AudioPreviewState())
@@ -54,10 +58,14 @@ class AudioPreviewPlayer(
     fun playClip(
         videoUri: Uri,
         startMs: Long,
+        selectedAudioIndex: Int = 0,
         durationMs: Long = DEFAULT_CLIP_DURATION_MS,
     ) {
         val safeStart = startMs.coerceAtLeast(0L)
+        desiredAudioIndex = selectedAudioIndex.coerceAtLeast(0)
         val exo = ensurePlayer(videoUri)
+
+        applyAudioTrackOverrideIfReady(exo, exo.currentTracks)
 
         _state.value = AudioPreviewState(
             isPlaying = true,
@@ -89,6 +97,7 @@ class AudioPreviewPlayer(
         player?.release()
         player = null
         preparedUri = null
+        appliedAudioIndex = -1
         _state.value = AudioPreviewState()
     }
 
@@ -99,6 +108,7 @@ class AudioPreviewPlayer(
         }
 
         existing?.release()
+        appliedAudioIndex = -1
 
         val renderersFactory = DefaultRenderersFactory(context.applicationContext)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
@@ -106,7 +116,6 @@ class AudioPreviewPlayer(
         val exo = ExoPlayer.Builder(context.applicationContext, renderersFactory)
             .build()
             .apply {
-                // Disable video decoding completely for lightweight audio-only verification
                 trackSelectionParameters = trackSelectionParameters
                     .buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
@@ -114,6 +123,10 @@ class AudioPreviewPlayer(
                     .build()
 
                 addListener(object : Player.Listener {
+                    override fun onTracksChanged(tracks: Tracks) {
+                        applyAudioTrackOverrideIfReady(this@apply, tracks)
+                    }
+
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
@@ -134,7 +147,7 @@ class AudioPreviewPlayer(
                         _state.value = _state.value.copy(
                             isPlaying = false,
                             isBuffering = false,
-                            errorMessage = "Gagal memutar audio preview: ${error.localizedMessage ?: error.errorCodeName}",
+                            errorMessage = "Gagal memutar preview audio: ${error.localizedMessage ?: error.errorCodeName}",
                         )
                     }
                 })
@@ -146,6 +159,22 @@ class AudioPreviewPlayer(
         player = exo
         preparedUri = videoUri
         return exo
+    }
+
+    private fun applyAudioTrackOverrideIfReady(exo: ExoPlayer, tracks: Tracks) {
+        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        if (audioGroups.isEmpty()) return
+
+        val clampedIndex = desiredAudioIndex.coerceIn(0, audioGroups.lastIndex)
+        if (appliedAudioIndex == clampedIndex) return
+
+        val targetGroup = audioGroups[clampedIndex]
+        exo.trackSelectionParameters = exo.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+            .addOverride(TrackSelectionOverride(targetGroup.mediaTrackGroup, 0))
+            .build()
+        appliedAudioIndex = clampedIndex
     }
 
     private fun startTicker(clipStartMs: Long, clipDurationMs: Long) {
@@ -164,7 +193,7 @@ class AudioPreviewPlayer(
                     currentPositionMs = pos.coerceAtLeast(clipStartMs),
                     isPlaying = exo.playWhenReady && exo.playbackState != Player.STATE_ENDED,
                 )
-                delay(50L) // 20 Hz UI updates for crisp subtitle timing during preview
+                delay(50L)
             }
         }
     }

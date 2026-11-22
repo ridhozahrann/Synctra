@@ -1,12 +1,14 @@
 package com.synctra.app.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -14,15 +16,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.synctra.app.domain.model.ConfidenceLevel
@@ -32,7 +34,6 @@ import com.synctra.app.ui.theme.SynctraColors
 import java.util.Locale
 import kotlin.math.abs
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ResultCard(
     result: SyncResult,
@@ -47,248 +48,249 @@ fun ResultCard(
     val formattedMs = formatSignedMillis(effectiveOffsetMs)
 
     val confidenceColor = when (result.confidenceLevel) {
-        ConfidenceLevel.HIGH -> SynctraColors.Success
-        ConfidenceLevel.MEDIUM -> SynctraColors.Warning
-        ConfidenceLevel.LOW -> SynctraColors.Error
-    }
-    val confidenceBg = when (result.confidenceLevel) {
-        ConfidenceLevel.HIGH -> SynctraColors.SuccessContainer
-        ConfidenceLevel.MEDIUM -> SynctraColors.WarningContainer
-        ConfidenceLevel.LOW -> SynctraColors.ErrorContainer
+        ConfidenceLevel.HIGH -> SynctraColors.Synced
+        ConfidenceLevel.MEDIUM -> SynctraColors.Accent
+        ConfidenceLevel.LOW -> SynctraColors.Danger
     }
 
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(16.dp),
         color = SynctraColors.Surface,
-        border = BorderStroke(1.dp, SynctraColors.Primary.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, SynctraColors.Hairline),
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            // Top metadata row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "HASIL CEK SYNC",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.2.sp,
-                    color = SynctraColors.Primary,
+                    text = "Offset subtitle",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = SynctraColors.InkMuted,
                 )
-
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = confidenceBg,
-                ) {
-                    Text(
-                        text = "${result.confidenceLevel.labelId} · ${(result.confidence * 100).toInt()}%",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = confidenceColor,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Big offset hero text
-            Text(
-                text = if (isSynced) "Sudah Sinkron" else "$formattedSec detik",
-                fontSize = 36.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = if (isSynced) SynctraColors.Success else SynctraColors.TextPrimary,
-                letterSpacing = (-1.0).sp,
-            )
-
-            if (manualNudgeMs != 0L) {
-                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Termasuk geser manual ${formatSignedSeconds(manualNudgeMs)}s (deteksi awal: ${formatSignedSeconds(result.offsetMs)}s)",
+                    text = "${(result.confidence * 100).toInt()}% · ${result.confidenceLevel.labelId}",
                     fontSize = 12.sp,
-                    color = SynctraColors.Primary,
+                    fontFamily = FontFamily.Monospace,
+                    color = confidenceColor,
                 )
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Plain-language player guidance
-            val guidanceText = when {
-                isSynced -> "Subtitle sudah cocok dengan suara film (selisih ${formattedMs} ms). Tidak perlu geser delay di pemutar video."
-                effectiveOffsetMs > 0 ->
-                    "Subtitle muncul ${String.format(Locale.US, "%.2f", effectiveOffsetMs / 1000.0)} detik terlalu cepat. " +
-                        "Masukkan $formattedSec detik ($formattedMs ms) pada pengaturan delay subtitle di VLC / MX Player / Nova."
-                else ->
-                    "Subtitle muncul ${String.format(Locale.US, "%.2f", abs(effectiveOffsetMs) / 1000.0)} detik terlambat. " +
-                        "Masukkan $formattedSec detik ($formattedMs ms) pada pengaturan delay subtitle di VLC / MX Player / Nova."
+            // Hero numeric readout
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = if (isSynced) "Sinkron" else "${formattedSec}s",
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = if (isSynced) FontFamily.Default else FontFamily.Monospace,
+                    letterSpacing = (-1.5).sp,
+                    color = if (isSynced) SynctraColors.Synced else SynctraColors.InkPrimary,
+                )
+                if (!isSynced) {
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "$formattedMs ms",
+                        fontSize = 14.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = SynctraColors.InkMuted,
+                        modifier = Modifier.padding(bottom = 7.dp),
+                    )
+                }
             }
 
+            if (manualNudgeMs != 0L) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Manual ${formatSignedSeconds(manualNudgeMs)}s (awal ${formatSignedSeconds(result.offsetMs)}s)",
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = SynctraColors.Accent,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Direct player instruction
+            val guidance = when {
+                isSynced -> "Sudah cocok dengan audio (selisih $formattedMs ms)."
+                effectiveOffsetMs > 0 ->
+                    "Subtitle terlalu cepat ${String.format(Locale.US, "%.2f", effectiveOffsetMs / 1000.0)} detik. " +
+                        "Atur delay ${formattedSec}s di VLC / MX Player / Nova."
+                else ->
+                    "Subtitle terlambat ${String.format(Locale.US, "%.2f", abs(effectiveOffsetMs) / 1000.0)} detik. " +
+                        "Atur delay ${formattedSec}s di VLC / MX Player / Nova."
+            }
             Text(
-                text = guidanceText,
+                text = guidance,
                 fontSize = 14.sp,
                 lineHeight = 20.sp,
-                color = SynctraColors.TextSecondary,
+                color = SynctraColors.InkSecondary,
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Copy buttons
+            // Action buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
                     onClick = { onCopySeconds("${formattedSec}s") },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = SynctraColors.Primary,
-                        contentColor = SynctraColors.OnPrimary,
+                        containerColor = SynctraColors.ActionBg,
+                        contentColor = SynctraColors.ActionInk,
                     ),
                 ) {
                     Text(
                         text = "Salin ${formattedSec}s",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
                     )
                 }
 
                 OutlinedButton(
                     onClick = { onCopyMillis(formattedMs) },
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, SynctraColors.Border),
+                    modifier = Modifier.height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, SynctraColors.Hairline),
                 ) {
                     Text(
-                        text = "$formattedMs ms",
-                        color = SynctraColors.TextPrimary,
-                        fontWeight = FontWeight.SemiBold,
+                        text = "Salin ms",
+                        color = SynctraColors.InkPrimary,
+                        fontWeight = FontWeight.Medium,
                         fontSize = 13.sp,
                     )
                 }
             }
 
-            // Drift / FPS mismatch warning banner
+            // Drift warning callout (left-accent bar, clean and restrained)
             if (result.drift.severity != DriftSeverity.NONE) {
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
                 val isSevere = result.drift.severity == DriftSeverity.SEVERE
-                val warnColor = if (isSevere) SynctraColors.Error else SynctraColors.Warning
-                val warnBg = if (isSevere) SynctraColors.ErrorContainer else SynctraColors.WarningContainer
+                val barColor = if (isSevere) SynctraColors.Danger else SynctraColors.Accent
+                val bgColor = if (isSevere) SynctraColors.DangerDim else SynctraColors.AccentDim
 
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = warnBg,
-                    border = BorderStroke(1.dp, warnColor.copy(alpha = 0.5f)),
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text = if (isSevere) {
-                                "Peringatan: Offset Tidak Stabil (Drift / Beda FPS)"
-                            } else {
-                                "Info: Sedikit Pergeseran Antar Bagian Film"
-                            },
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = warnColor,
-                        )
-                        result.drift.suspectedCause?.let { cause ->
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = cause,
-                                fontSize = 12.sp,
-                                color = SynctraColors.TextPrimary,
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Selisih antar titik sampel: ${String.format(Locale.US, "%.2f", result.drift.spreadMs / 1000.0)} detik. " +
-                                "Geser satu angka saja mungkin tidak pas dari awal sampai akhir.",
-                            fontSize = 12.sp,
-                            color = SynctraColors.TextSecondary,
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-            HorizontalDivider(color = SynctraColors.Border)
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Multi-point checkpoint breakdown
-            Text(
-                text = "Detail Titik Sampel (${result.windowResults.size} bagian tengah film)",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = SynctraColors.TextSecondary,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            result.windowResults.forEach { wr ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 3.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                        .height(IntrinsicSize.Min)
+                        .background(bgColor, RoundedCornerShape(10.dp)),
                 ) {
-                    Text(
-                        text = "${wr.window.label} (${formatClock(wr.window.startMs)})",
-                        fontSize = 12.sp,
-                        color = SynctraColors.TextSecondary,
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .fillMaxHeight()
+                            .background(barColor, RoundedCornerShape(topStart = 10.dp, bottomStart = 10.dp)),
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                         Text(
-                            text = "${formatSignedSeconds(wr.offsetMs)}s",
+                            text = if (isSevere) "Drift / beda FPS terdeteksi" else "Ada sedikit pergeseran antar bagian",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = SynctraColors.TextPrimary,
+                            color = barColor,
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        result.drift.suspectedCause?.let { cause ->
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = cause,
+                                fontSize = 12.sp,
+                                color = SynctraColors.InkPrimary,
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "${(wr.confidence * 100).toInt()}%",
-                            fontSize = 11.sp,
-                            color = SynctraColors.TextMuted,
+                            text = "Selisih antar titik sampel ${String.format(Locale.US, "%.2f", result.drift.spreadMs / 1000.0)}s.",
+                            fontSize = 12.sp,
+                            color = SynctraColors.InkSecondary,
                         )
+                    }
+                }
+            }
+
+            // 3-column monospace checkpoint strip
+            if (result.windowResults.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = SynctraColors.Stage,
+                    border = BorderStroke(1.dp, SynctraColors.Hairline),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp, horizontal = 6.dp),
+                    ) {
+                        result.windowResults.forEachIndexed { idx, wr ->
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text(
+                                    text = formatClock(wr.window.startMs),
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = SynctraColors.InkMuted,
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "${formatSignedSeconds(wr.offsetMs)}s",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = SynctraColors.InkPrimary,
+                                    textAlign = TextAlign.Center,
+                                )
+                                Text(
+                                    text = "${(wr.confidence * 100).toInt()}%",
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = SynctraColors.InkMuted,
+                                )
+                            }
+                            if (idx < result.windowResults.lastIndex) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(1.dp)
+                                        .height(36.dp)
+                                        .align(Alignment.CenterVertically)
+                                        .background(SynctraColors.Hairline),
+                                )
+                            }
+                        }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Diagnostic chips
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                InfoChip(
-                    label = if (result.usedFfmpegDecoder) {
-                        "FFmpeg Audio · ${result.audioCodecUsed}"
-                    } else {
-                        "Android Audio · ${result.audioCodecUsed}"
-                    }
-                )
-                InfoChip(label = "Proses ${String.format(Locale.US, "%.1f", result.analysisDurationMs / 1000.0)} dtk")
-                if (result.filteredJunkCues > 0) {
-                    InfoChip(label = "${result.filteredJunkCues} iklan/SDH diabaikan")
-                }
+            // Quiet technical footer
+            val footerParts = buildList {
+                if (result.audioTrackTitle.isNotBlank()) add(result.audioTrackTitle)
+                add(result.audioCodecUsed)
+                add(if (result.usedFfmpegDecoder) "FFmpeg" else "MediaCodec")
+                add("${String.format(Locale.US, "%.1f", result.analysisDurationMs / 1000.0)}s")
+                if (result.filteredJunkCues > 0) add("${result.filteredJunkCues} iklan/SDH difilter")
             }
+            Text(
+                text = footerParts.joinToString(" · "),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = SynctraColors.InkMuted,
+                lineHeight = 16.sp,
+            )
         }
-    }
-}
-
-@Composable
-private fun InfoChip(label: String) {
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = SynctraColors.SurfaceElevated,
-    ) {
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            color = SynctraColors.TextSecondary,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-        )
     }
 }
 

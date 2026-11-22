@@ -4,12 +4,12 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Waveform bars representing audio sync -->
+    <!-- Minimalist audio waveform bars in warm ivory -->
     <path
-        android:fillColor="#38BDF8"
-        android:pathData="M30,46h6v16h-6zM41,34h6v40h-6zM52,26h6v56h-6zM63,38h6v32h-6zM74,48h6v12h-6z" />
-    <!-- Subtitle alignment bar -->
+        android:fillColor="#F5F5F7"
+        android:pathData="M31,48h5v14h-5zM42,37h5v36h-5zM53,28h5v50h-5zM64,40h5v28h-5zM75,49h5v12h-5z" />
+    <!-- Studio amber timecode alignment tick -->
     <path
-        android:fillColor="#F8FAFC"
-        android:pathData="M32,80h44v4h-44z" />
+        android:fillColor="#F59E0B"
+        android:pathData="M31,82h49v3.5h-49z" />
 </vector>

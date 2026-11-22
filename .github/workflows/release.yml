@@ -81,19 +81,17 @@ jobs:
           else
             gh release create "$TAG_NAME" "$APK_PATH" \
               --title "Synctra $TAG_NAME" \
-              --notes "## Synctra $TAG_NAME — Android Subtitle Sync Checker
+              --notes "## Synctra $TAG_NAME
 
-          Aplikasi Android ringan (100% offline) untuk mengecek selisih detik (*offset*) antara subtitle dan film tanpa tebak-tebakan manual di pemutar video.
+          Offline Android subtitle sync checker (~7 MB universal APK).
 
-          ### Fitur Utama
-          - **Audio-Only Multi-Point Sampling:** Analisis 3 titik padat dialog di tengah film (~20%, ~50%, ~75%) tanpa decode video.
-          - **Filter Anti-Iklan & SDH Otomatis:** Menyaring iklan situs, URL, kredit penerjemah (Indonesia & Inggris), serta teks non-dialog (\`[musik]\`, \`♪\`).
-          - **Dukungan Codec Audio Luas (Media3 + FFmpeg Audio-Only):** Mendukung \`.mp4\`, \`.mkv\`, \`.avi\`, \`.webm\` dengan audio AAC, MP3, Opus, Vorbis, FLAC, **AC-3**, **E-AC-3**, **DTS**, **TrueHD**, dan ALAC.
-          - **Deteksi Drift / Beda FPS:** Memberi peringatan jika offset bergeser antara awal–tengah–akhir film (misal 23.976 fps vs 25 fps).
-          - **Test Dengar 10 Detik:** Preview audio-only tersinkronisasi dengan teks subtitle real-time + tombol geser halus (\`±0.1s\` / \`±0.5s\`).
+          ### What's included
+          - Multi-audio track selector (e.g. pick English or Hindi track for both analysis and 10-second audio preview)
+          - Redesigned matte dark UI with monospace timecode readouts and segmented fine-tune controls
+          - Automatic subtitle cleanup (ads, URLs, translator credits, SDH cues)
+          - Audio-only multi-point sampling with Media3 + FFmpeg audio decoder (AAC, MP3, Opus, FLAC, AC-3, E-AC-3, DTS, TrueHD, ALAC)
+          - Progressive drift / FPS mismatch detection
 
-          ### Cara Instal di Android
-          1. Unduh file **\`Synctra-${TAG_NAME}-universal.apk\`** di bawah ini.
-          2. Buka file APK dari File Manager / browser dan izinkan *Install unknown apps* jika diminta.
-          3. Pilih file film + file subtitle (\`.srt\`, \`.ass\`/\`.ssa\`, \`.vtt\`) → tekan **Cek Sinkronisasi** → salin angka offset ke VLC / MX Player / Nova Video Player!"
+          ### Install
+          Download \`Synctra-${TAG_NAME}-universal.apk\` below and install on Android 7.0+ (API 24+)."
           fi

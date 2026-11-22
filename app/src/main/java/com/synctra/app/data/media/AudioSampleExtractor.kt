@@ -23,6 +23,7 @@ import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.TrackOutput
 import com.synctra.app.domain.audio.SpeechActivityDetector
+import com.synctra.app.domain.model.AudioTrackOption
 import com.synctra.app.domain.model.MediaTrackInfo
 import com.synctra.app.domain.model.SampleWindow
 import java.io.ByteArrayOutputStream
@@ -38,20 +39,20 @@ data class ExtractedWindowAudio(
 )
 
 /**
- * Extracts and decodes ONLY the audio track for selected movie windows (skipping video frames),
+ * Extracts and decodes ONLY the selected audio track for sampled movie windows (skipping video frames),
  * feeding decoded 16-bit PCM directly into [SpeechActivityDetector.StreamingCollector].
  *
  * Uses Media3 container extractors (MP4, MKV, WebM, AVI, TS, etc.) with automatic dual-path
  * audio decoding:
- *   1. Native Android [MediaCodec] when supported by the device (hardware-accelerated / fast)
- *   2. Bundled audio-only FFmpeg ([SynctraFfmpegPcmBridge]) fallback for AC-3, E-AC-3, DTS,
+ *   1. Native Android [MediaCodec] when supported by the device
+ *   2. Bundled audio-only FFmpeg ([SynctraFfmpegPcmBridge]) for AC-3, E-AC-3, DTS,
  *      TrueHD, MLP, ALAC, and any codec unsupported by the device's platform codecs.
  */
 @OptIn(UnstableApi::class)
 class AudioSampleExtractor(private val context: Context) {
 
     /**
-     * Probes container metadata (duration & audio track format) in milliseconds without decoding video.
+     * Probes container metadata (duration & all available audio tracks) without decoding video.
      */
     @Throws(IOException::class)
     fun probeMedia(uri: Uri): MediaTrackInfo {
@@ -60,20 +61,34 @@ class AudioSampleExtractor(private val context: Context) {
             val totalLength = dataSource.open(DataSpec(uri))
             val probeSession = openExtractorAndProbe(dataSource, uri, totalLength)
             try {
-                val fmt = probeSession.audioFormat
-                    ?: throw IOException("File ini tidak memiliki jalur audio yang bisa dibaca.")
+                if (probeSession.audioEntries.isEmpty()) {
+                    throw IOException("File ini tidak memiliki jalur audio yang bisa dibaca.")
+                }
                 val durationMs = if (probeSession.seekMap.durationUs != C.TIME_UNSET) {
                     probeSession.seekMap.durationUs / 1000L
                 } else {
                     0L
                 }
-                val mime = fmt.sampleMimeType ?: MimeTypes.AUDIO_UNKNOWN
+                val tracks = probeSession.audioEntries.mapIndexed { idx, entry ->
+                    val fmt = entry.format
+                    val mime = fmt?.sampleMimeType ?: MimeTypes.AUDIO_UNKNOWN
+                    AudioTrackOption(
+                        audioIndex = idx,
+                        extractorTrackId = entry.trackId,
+                        mimeType = mime,
+                        codecLabel = friendlyCodecLabel(mime),
+                        languageCode = fmt?.language,
+                        trackLabel = fmt?.label,
+                        channelCount = fmt?.channelCount?.takeIf { it > 0 } ?: 2,
+                        sampleRate = fmt?.sampleRate?.takeIf { it > 0 } ?: 48_000,
+                        isDefault = ((fmt?.selectionFlags ?: 0) and C.SELECTION_FLAG_DEFAULT) != 0,
+                    )
+                }
+                val defaultIdx = tracks.indexOfFirst { it.isDefault }.takeIf { it >= 0 } ?: 0
                 return MediaTrackInfo(
                     durationMs = durationMs,
-                    audioMimeType = mime,
-                    sampleRate = fmt.sampleRate.takeIf { it > 0 } ?: 48_000,
-                    channelCount = fmt.channelCount.takeIf { it > 0 } ?: 2,
-                    audioCodecLabel = friendlyCodecLabel(mime),
+                    audioTracks = tracks,
+                    defaultAudioIndex = defaultIdx,
                 )
             } finally {
                 probeSession.extractor.release()
@@ -84,20 +99,27 @@ class AudioSampleExtractor(private val context: Context) {
     }
 
     /**
-     * Extracts speech-activity envelopes for each planned [SampleWindow].
+     * Extracts speech-activity envelopes for each planned [SampleWindow] from the chosen [selectedAudioIndex].
      */
     @Throws(IOException::class)
     fun extractWindows(
         uri: Uri,
         windows: List<SampleWindow>,
+        selectedAudioIndex: Int = 0,
         onWindowProgress: (windowIndex: Int, totalWindows: Int, window: SampleWindow) -> Unit = { _, _, _ -> },
     ): List<ExtractedWindowAudio> {
         val dataSource = DefaultDataSource.Factory(context.applicationContext).createDataSource()
         try {
             val totalLength = dataSource.open(DataSpec(uri))
             val session = openExtractorAndProbe(dataSource, uri, totalLength)
-            val audioFormat = session.audioFormat
-                ?: throw IOException("Jalur audio tidak ditemukan di dalam file video.")
+            if (session.audioEntries.isEmpty()) {
+                throw IOException("Jalur audio tidak ditemukan di dalam file video.")
+            }
+
+            val safeIdx = selectedAudioIndex.coerceIn(0, session.audioEntries.lastIndex)
+            val targetEntry = session.audioEntries[safeIdx]
+            val audioFormat = targetEntry.format
+                ?: throw IOException("Format jalur audio yang dipilih tidak terbaca.")
 
             val decoder = createBestAudioDecoder(audioFormat)
             try {
@@ -110,6 +132,7 @@ class AudioSampleExtractor(private val context: Context) {
                         uri = uri,
                         totalLength = totalLength,
                         session = session,
+                        targetTrackOutput = targetEntry.trackOutput,
                         decoder = decoder,
                         window = window,
                     )
@@ -137,6 +160,7 @@ class AudioSampleExtractor(private val context: Context) {
         uri: Uri,
         totalLength: Long,
         session: ProbeSession,
+        targetTrackOutput: AudioCaptureTrackOutput,
         decoder: AudioPacketDecoder,
         window: SampleWindow,
     ): FloatArray {
@@ -144,13 +168,13 @@ class AudioSampleExtractor(private val context: Context) {
         val endUs = window.endMs * 1000L
 
         decoder.flush()
-        session.trackOutput.reset()
+        session.audioEntries.forEach { it.trackOutput.reset() }
 
         var vad: SpeechActivityDetector? = null
         var collector: SpeechActivityDetector.StreamingCollector? = null
         var windowFinished = false
 
-        session.trackOutput.packetListener = { packetBytes, packetSize, ptsUs ->
+        targetTrackOutput.packetListener = { packetBytes, packetSize, ptsUs ->
             if (!windowFinished) {
                 if (ptsUs >= endUs + 500_000L) {
                     windowFinished = true
@@ -180,7 +204,7 @@ class AudioSampleExtractor(private val context: Context) {
         val positionHolder = PositionHolder()
 
         var readIterations = 0
-        val maxReadIterations = 1_000_000 // Safety guard against malformed containers
+        val maxReadIterations = 1_000_000
 
         while (!windowFinished && readIterations < maxReadIterations) {
             readIterations++
@@ -202,7 +226,7 @@ class AudioSampleExtractor(private val context: Context) {
             }
         }
 
-        session.trackOutput.packetListener = null
+        targetTrackOutput.packetListener = null
         return collector?.buildEnvelope() ?: FloatArray(0)
     }
 
@@ -214,11 +238,17 @@ class AudioSampleExtractor(private val context: Context) {
         dataSource.open(spec)
     }
 
+    private class AudioTrackEntry(
+        val trackId: Int,
+        val trackOutput: AudioCaptureTrackOutput,
+    ) {
+        var format: Format? = null
+    }
+
     private data class ProbeSession(
         val extractor: Extractor,
         val seekMap: SeekMap,
-        val audioFormat: Format?,
-        val trackOutput: AudioCaptureTrackOutput,
+        val audioEntries: List<AudioTrackEntry>,
     )
 
     private fun openExtractorAndProbe(
@@ -253,25 +283,29 @@ class AudioSampleExtractor(private val context: Context) {
         reopenAt(dataSource, uri, 0L)
 
         var discoveredSeekMap: SeekMap? = null
-        var discoveredAudioFormat: Format? = null
-        var audioTrackId = -1
-        val audioTrackOutput = AudioCaptureTrackOutput { fmt ->
-            if (discoveredAudioFormat == null) {
-                discoveredAudioFormat = fmt
-            }
-        }
+        var tracksEnded = false
+        val audioEntries = mutableListOf<AudioTrackEntry>()
         val discardTrackOutput = DiscardTrackOutput()
 
         extractor.init(object : ExtractorOutput {
             override fun track(id: Int, type: Int): TrackOutput {
-                if (type == C.TRACK_TYPE_AUDIO && audioTrackId == -1) {
-                    audioTrackId = id
-                    return audioTrackOutput
+                if (type == C.TRACK_TYPE_AUDIO) {
+                    lateinit var entry: AudioTrackEntry
+                    val output = AudioCaptureTrackOutput { fmt ->
+                        if (entry.format == null) {
+                            entry.format = fmt
+                        }
+                    }
+                    entry = AudioTrackEntry(id, output)
+                    audioEntries.add(entry)
+                    return output
                 }
                 return discardTrackOutput
             }
 
-            override fun endTracks() = Unit
+            override fun endTracks() {
+                tracksEnded = true
+            }
 
             override fun seekMap(seekMap: SeekMap) {
                 discoveredSeekMap = seekMap
@@ -282,7 +316,10 @@ class AudioSampleExtractor(private val context: Context) {
         val positionHolder = PositionHolder()
         var steps = 0
 
-        while ((discoveredSeekMap == null || discoveredAudioFormat == null) && steps < 4000) {
+        fun allAudioFormatsReady(): Boolean =
+            tracksEnded && audioEntries.isNotEmpty() && audioEntries.all { it.format != null }
+
+        while ((discoveredSeekMap == null || !allAudioFormatsReady()) && steps < 6000) {
             steps++
             val res = try {
                 extractor.read(extractorInput, positionHolder)
@@ -304,18 +341,18 @@ class AudioSampleExtractor(private val context: Context) {
         val seekMap = discoveredSeekMap
             ?: throw IOException("Tidak dapat membaca timeline/seek map dari file video ini.")
 
+        val validAudioEntries = audioEntries.filter { it.format != null }
+
         return ProbeSession(
             extractor = extractor,
             seekMap = seekMap,
-            audioFormat = discoveredAudioFormat,
-            trackOutput = audioTrackOutput,
+            audioEntries = validAudioEntries,
         )
     }
 
     private fun createBestAudioDecoder(format: Format): AudioPacketDecoder {
         val mime = format.sampleMimeType ?: ""
 
-        // 1. Raw PCM needs no decoding
         if (mime == MimeTypes.AUDIO_RAW) {
             return RawPcmDecoder(
                 channels = format.channelCount.coerceAtLeast(1),
@@ -323,8 +360,6 @@ class AudioSampleExtractor(private val context: Context) {
             )
         }
 
-        // 2. For codecs notoriously unsupported on many Android devices (AC3, EAC3, DTS, TrueHD, MLP, ALAC),
-        //    prefer bundled FFmpeg directly if available for guaranteed reliability!
         val preferFfmpeg = mime in setOf(
             MimeTypes.AUDIO_AC3,
             MimeTypes.AUDIO_E_AC3,
@@ -341,10 +376,8 @@ class AudioSampleExtractor(private val context: Context) {
             runCatching { return FfmpegPacketDecoder(SynctraFfmpegPcmBridge.create(format)) }
         }
 
-        // 3. Try native Android MediaCodec first for standard codecs (AAC, MP3, Opus, Vorbis, FLAC)
         runCatching { return PlatformMediaCodecDecoder(format) }
 
-        // 4. Fallback to bundled FFmpeg audio decoder
         if (SynctraFfmpegPcmBridge.supportsMimeType(mime)) {
             return FfmpegPacketDecoder(SynctraFfmpegPcmBridge.create(format))
         }
@@ -354,10 +387,10 @@ class AudioSampleExtractor(private val context: Context) {
 
     private fun friendlyCodecLabel(mime: String): String = when (mime) {
         MimeTypes.AUDIO_AAC -> "AAC"
-        MimeTypes.AUDIO_AC3 -> "AC-3 (Dolby Digital)"
-        MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_E_AC3_JOC -> "E-AC-3 (Dolby Digital+)"
+        MimeTypes.AUDIO_AC3 -> "AC-3"
+        MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_E_AC3_JOC -> "E-AC-3"
         MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_DTS_HD, MimeTypes.AUDIO_DTS_X -> "DTS"
-        MimeTypes.AUDIO_TRUEHD -> "Dolby TrueHD"
+        MimeTypes.AUDIO_TRUEHD -> "TrueHD"
         MimeTypes.AUDIO_OPUS -> "Opus"
         MimeTypes.AUDIO_VORBIS -> "Vorbis"
         MimeTypes.AUDIO_MPEG -> "MP3"
@@ -589,7 +622,6 @@ class AudioSampleExtractor(private val context: Context) {
                 }
             }
 
-            // Preserve any trailing bytes belonging to the next sample
             if (offset > 0 && sampleEnd < bytes.size) {
                 packetAccumulator.write(bytes, sampleEnd, bytes.size - sampleEnd)
             }

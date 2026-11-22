@@ -1,6 +1,8 @@
 package com.synctra.app.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,20 +14,20 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -41,6 +43,7 @@ fun AudioPreviewCard(
     windows: List<WindowSyncResult>,
     selectedWindowIndex: Int,
     manualNudgeMs: Long,
+    audioTrackTitle: String?,
     onSelectWindow: (Int) -> Unit,
     onTogglePlay: () -> Unit,
     onNudgeOffset: (Long) -> Unit,
@@ -57,11 +60,12 @@ fun AudioPreviewCard(
 
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(16.dp),
         color = SynctraColors.Surface,
-        border = BorderStroke(1.dp, SynctraColors.Border),
+        border = BorderStroke(1.dp, SynctraColors.Hairline),
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
+            // Header row + checkpoint selector
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -69,47 +73,41 @@ fun AudioPreviewCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "TEST DENGAR 10 DETIK",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.2.sp,
-                        color = SynctraColors.Success,
+                        text = "Test dengar",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = SynctraColors.InkPrimary,
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Putar audio saja & lihat subtitle real-time untuk pastikan pas",
-                        fontSize = 12.sp,
-                        color = SynctraColors.TextSecondary,
-                    )
+                    if (!audioTrackTitle.isNullOrBlank()) {
+                        Text(
+                            text = "Audio: $audioTrackTitle · 10 detik",
+                            fontSize = 12.sp,
+                            color = SynctraColors.InkMuted,
+                        )
+                    }
                 }
-            }
 
-            if (windows.size > 1) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    windows.forEachIndexed { idx, wr ->
-                        val selected = idx == selectedWindowIndex
-                        Surface(
-                            onClick = { onSelectWindow(idx) },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (selected) SynctraColors.PrimaryContainer else SynctraColors.SurfaceElevated,
-                            border = BorderStroke(
-                                1.dp,
-                                if (selected) SynctraColors.Primary else SynctraColors.Border,
-                            ),
-                        ) {
-                            Text(
-                                text = wr.window.label.substringBefore(" "),
-                                fontSize = 12.sp,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (selected) SynctraColors.Primary else SynctraColors.TextSecondary,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 7.dp),
-                            )
+                if (windows.size > 1) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        windows.forEachIndexed { idx, wr ->
+                            val selected = idx == selectedWindowIndex
+                            Surface(
+                                onClick = { onSelectWindow(idx) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selected) SynctraColors.SurfaceSubtle else SynctraColors.Surface,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (selected) SynctraColors.Accent else SynctraColors.Hairline,
+                                ),
+                            ) {
+                                Text(
+                                    text = wr.window.label.substringBefore(" "),
+                                    fontSize = 11.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (selected) SynctraColors.InkPrimary else SynctraColors.InkMuted,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -117,14 +115,14 @@ fun AudioPreviewCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Cinema-style live subtitle preview stage
+            // Recessed cinema subtitle stage
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 92.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = SynctraColors.Background,
-                border = BorderStroke(1.dp, SynctraColors.Border),
+                    .heightIn(min = 88.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = SynctraColors.Stage,
+                border = BorderStroke(1.dp, SynctraColors.Hairline),
             ) {
                 Box(
                     modifier = Modifier
@@ -136,15 +134,15 @@ fun AudioPreviewCard(
                         text = when {
                             previewState.isBuffering -> "Memuat audio..."
                             !activeSubtitleText.isNullOrBlank() -> activeSubtitleText
-                            previewState.isPlaying -> "· · · (jeda dialog) · · ·"
-                            else -> "Tekan Putar 10 Detik untuk verifikasi suara & teks"
+                            previewState.isPlaying -> "—"
+                            else -> "Tekan play untuk cocokkan suara & teks"
                         },
                         fontSize = if (!activeSubtitleText.isNullOrBlank()) 16.sp else 13.sp,
-                        fontWeight = if (!activeSubtitleText.isNullOrBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                        fontWeight = if (!activeSubtitleText.isNullOrBlank()) FontWeight.Medium else FontWeight.Normal,
                         color = if (!activeSubtitleText.isNullOrBlank()) {
-                            SynctraColors.TextPrimary
+                            SynctraColors.InkPrimary
                         } else {
-                            SynctraColors.TextMuted
+                            SynctraColors.InkMuted
                         },
                         textAlign = TextAlign.Center,
                         lineHeight = 22.sp,
@@ -152,124 +150,138 @@ fun AudioPreviewCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // Playback clock & progress bar
+            // Compact studio transport row: Play circle + hairline scrubber + timecode
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = formatClock(previewState.currentPositionMs),
-                    fontSize = 11.sp,
-                    color = SynctraColors.TextMuted,
-                )
-                Text(
-                    text = formatClock(previewState.clipStartMs + previewState.clipDurationMs),
-                    fontSize = 11.sp,
-                    color = SynctraColors.TextMuted,
-                )
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(if (previewState.isPlaying) SynctraColors.SurfaceSubtle else SynctraColors.ActionBg)
+                        .clickable(onClick = onTogglePlay),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (previewState.isPlaying) Icons.Filled.Close else Icons.Filled.PlayArrow,
+                        contentDescription = if (previewState.isPlaying) "Hentikan" else "Putar",
+                        tint = if (previewState.isPlaying) SynctraColors.InkPrimary else SynctraColors.ActionInk,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = SynctraColors.Accent,
+                        trackColor = SynctraColors.SurfaceSubtle,
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = formatClock(previewState.currentPositionMs),
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = SynctraColors.InkSecondary,
+                        )
+                        Text(
+                            text = formatClock(previewState.clipStartMs + previewState.clipDurationMs),
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = SynctraColors.InkMuted,
+                        )
+                    }
+                }
             }
-            Spacer(modifier = Modifier.height(4.dp))
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(5.dp),
-                color = SynctraColors.Success,
-                trackColor = SynctraColors.SurfaceElevated,
-            )
 
             previewState.errorMessage?.let { err ->
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = err,
                     fontSize = 12.sp,
-                    color = SynctraColors.Error,
+                    color = SynctraColors.Danger,
                 )
             }
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Play / Stop button
-            Button(
-                onClick = onTogglePlay,
+            // Segmented monospace fine-tune stepper bar
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (previewState.isPlaying) SynctraColors.SurfaceElevated else SynctraColors.Success,
-                    contentColor = if (previewState.isPlaying) SynctraColors.TextPrimary else SynctraColors.OnPrimary,
-                ),
+                shape = RoundedCornerShape(10.dp),
+                color = SynctraColors.Stage,
+                border = BorderStroke(1.dp, SynctraColors.Hairline),
             ) {
-                Icon(
-                    imageVector = if (previewState.isPlaying) Icons.Filled.Close else Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = if (previewState.isPlaying) "Hentikan Preview" else "Putar 10 Detik",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Fine-tune nudge bar
-            Text(
-                text = "Geser halus jika masih terasa sedikit meleset:",
-                fontSize = 11.sp,
-                color = SynctraColors.TextMuted,
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                NudgeButton("-0.5s", Modifier.weight(1f)) { onNudgeOffset(-500L) }
-                NudgeButton("-0.1s", Modifier.weight(1f)) { onNudgeOffset(-100L) }
-                OutlinedButton(
-                    onClick = onResetNudge,
-                    enabled = manualNudgeMs != 0L,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, SynctraColors.Border),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = "Reset",
-                        fontSize = 11.sp,
-                        color = if (manualNudgeMs != 0L) SynctraColors.Primary else SynctraColors.TextMuted,
+                    StepperCell("-0.5", Modifier.weight(1f)) { onNudgeOffset(-500L) }
+                    StepperDivider()
+                    StepperCell("-0.1", Modifier.weight(1f)) { onNudgeOffset(-100L) }
+                    StepperDivider()
+                    StepperCell(
+                        label = if (manualNudgeMs == 0L) "0.0" else "Reset",
+                        modifier = Modifier.weight(1f),
+                        accent = manualNudgeMs != 0L,
+                        enabled = manualNudgeMs != 0L,
+                        onClick = onResetNudge,
                     )
+                    StepperDivider()
+                    StepperCell("+0.1", Modifier.weight(1f)) { onNudgeOffset(+100L) }
+                    StepperDivider()
+                    StepperCell("+0.5", Modifier.weight(1f)) { onNudgeOffset(+500L) }
                 }
-                NudgeButton("+0.1s", Modifier.weight(1f)) { onNudgeOffset(+100L) }
-                NudgeButton("+0.5s", Modifier.weight(1f)) { onNudgeOffset(+500L) }
             }
         }
     }
 }
 
 @Composable
-private fun NudgeButton(
+private fun StepperDivider() {
+    Box(
+        modifier = Modifier
+            .width(1.dp)
+            .height(22.dp)
+            .background(SynctraColors.Hairline),
+    )
+}
+
+@Composable
+private fun StepperCell(
     label: String,
     modifier: Modifier = Modifier,
+    accent: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier,
-        shape = RoundedCornerShape(10.dp),
-        color = SynctraColors.SurfaceElevated,
-        border = BorderStroke(1.dp, SynctraColors.Border),
+    Box(
+        modifier = modifier
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text = label,
             fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = SynctraColors.TextPrimary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(vertical = 8.dp),
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Medium,
+            color = when {
+                accent -> SynctraColors.Accent
+                enabled -> SynctraColors.InkPrimary
+                else -> SynctraColors.InkMuted
+            },
         )
     }
 }

@@ -1,9 +1,14 @@
 package com.synctra.app.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,118 +16,237 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.synctra.app.domain.model.AudioTrackOption
 import com.synctra.app.ui.theme.SynctraColors
 
+/**
+ * Unified grouped input panel for selecting the movie, audio track (when multiple exist),
+ * and external subtitle file.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun FilePickerCard(
-    stepNumber: String,
-    title: String,
-    placeholder: String,
-    fileName: String?,
-    metaBadge: String?,
+fun MediaInputSheet(
+    videoName: String?,
+    videoMeta: String?,
+    isProbingVideo: Boolean,
+    audioTracks: List<AudioTrackOption>,
+    selectedAudioIndex: Int,
+    subtitleName: String?,
+    subtitleMeta: String?,
     enabled: Boolean,
-    onClick: () -> Unit,
+    onPickVideo: () -> Unit,
+    onSelectAudioTrack: (Int) -> Unit,
+    onPickSubtitle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val isSelected = fileName != null
-    val borderColor = if (isSelected) SynctraColors.Primary.copy(alpha = 0.55f) else SynctraColors.Border
-
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         color = SynctraColors.Surface,
-        border = BorderStroke(1.dp, borderColor),
+        border = BorderStroke(1.dp, SynctraColors.Hairline),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (isSelected) SynctraColors.PrimaryContainer else SynctraColors.SurfaceElevated,
-                modifier = Modifier.size(42.dp),
-            ) {
-                Column(
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (isSelected) {
-                        Icon(
-                            imageVector = Icons.Filled.CheckCircle,
-                            contentDescription = null,
-                            tint = SynctraColors.Primary,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    } else {
-                        Text(
-                            text = stepNumber,
-                            color = SynctraColors.TextSecondary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                        )
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Row 1: Video file
+            InputRow(
+                label = "Film",
+                value = videoName,
+                placeholder = "Pilih video (.mp4, .mkv, .avi, .webm)",
+                meta = if (isProbingVideo) "Membaca info audio..." else videoMeta,
+                enabled = enabled,
+                onClick = onPickVideo,
+            )
+
+            // Row 2 (conditional): Audio Track picker when container has 2+ audio tracks
+            AnimatedVisibility(visible = audioTracks.size > 1) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(
+                        color = SynctraColors.Hairline,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Jalur audio",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = SynctraColors.InkMuted,
+                            )
+                            Text(
+                                text = "${audioTracks.size} tersedia",
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = SynctraColors.InkMuted,
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            audioTracks.forEach { track ->
+                                val selected = track.audioIndex == selectedAudioIndex
+                                AudioTrackChip(
+                                    track = track,
+                                    selected = selected,
+                                    enabled = enabled,
+                                    onClick = { onSelectAudioTrack(track.audioIndex) },
+                                )
+                            }
+                        }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.width(14.dp))
+            HorizontalDivider(
+                color = SynctraColors.Hairline,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
 
-            Column(modifier = Modifier.weight(1f)) {
+            // Row 3: Subtitle file
+            InputRow(
+                label = "Subtitle",
+                value = subtitleName,
+                placeholder = "Pilih subtitle (.srt, .ass, .vtt)",
+                meta = subtitleMeta,
+                enabled = enabled,
+                onClick = onPickSubtitle,
+            )
+        }
+    }
+}
+
+@Composable
+private fun InputRow(
+    label: String,
+    value: String?,
+    placeholder: String,
+    meta: String?,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val selected = value != null
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(if (selected) SynctraColors.Accent else SynctraColors.Hairline),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = title,
+                    text = label,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
-                    color = if (isSelected) SynctraColors.Primary else SynctraColors.TextMuted,
+                    color = SynctraColors.InkMuted,
                 )
-                Spacer(modifier = Modifier.height(2.dp))
+            }
+            Spacer(modifier = Modifier.height(5.dp))
+            Text(
+                text = value ?: placeholder,
+                fontSize = 15.sp,
+                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                color = if (selected) SynctraColors.InkPrimary else SynctraColors.InkMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!meta.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
-                    text = fileName ?: placeholder,
-                    fontSize = 15.sp,
-                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (isSelected) SynctraColors.TextPrimary else SynctraColors.TextSecondary,
+                    text = meta,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = SynctraColors.InkSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Text(
+            text = if (selected) "Ganti" else "Pilih",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (enabled) SynctraColors.InkPrimary else SynctraColors.InkMuted,
+        )
+    }
+}
+
+@Composable
+private fun AudioTrackChip(
+    track: AudioTrackOption,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) SynctraColors.AccentDim else SynctraColors.SurfaceSubtle,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) SynctraColors.Accent else SynctraColors.Hairline,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(if (selected) SynctraColors.Accent else SynctraColors.InkMuted.copy(alpha = 0.4f)),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Column {
+                Text(
+                    text = track.displayTitle,
+                    fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (selected) SynctraColors.InkPrimary else SynctraColors.InkSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (!metaBadge.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = metaBadge,
-                        fontSize = 12.sp,
-                        color = SynctraColors.TextMuted,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = SynctraColors.SurfaceElevated,
-            ) {
                 Text(
-                    text = if (isSelected) "Ganti" else "Pilih",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (enabled) SynctraColors.Primary else SynctraColors.TextMuted,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    text = track.technicalSummary,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (selected) SynctraColors.Accent else SynctraColors.InkMuted,
                 )
             }
         }

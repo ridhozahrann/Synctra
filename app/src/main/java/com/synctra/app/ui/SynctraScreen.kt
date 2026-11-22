@@ -6,22 +6,25 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -36,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -43,7 +47,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.synctra.app.data.file.DocumentMetaReader
 import com.synctra.app.ui.components.AudioPreviewCard
-import com.synctra.app.ui.components.FilePickerCard
+import com.synctra.app.ui.components.MediaInputSheet
 import com.synctra.app.ui.components.ResultCard
 import com.synctra.app.ui.components.formatClock
 import com.synctra.app.ui.theme.SynctraColors
@@ -73,7 +77,7 @@ fun SynctraScreen(
     fun copyWithToast(value: String, label: String) {
         clipboard.setText(AnnotatedString(value))
         scope.launch {
-            snackbarHostState.showSnackbar("Disalin ke clipboard: $label")
+            snackbarHostState.showSnackbar("Disalin: $label")
         }
     }
 
@@ -91,67 +95,67 @@ fun SynctraScreen(
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // Header
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
+            // Minimal, confident header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                Column {
                     Text(
                         text = "Synctra",
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = SynctraColors.TextPrimary,
-                        letterSpacing = (-0.5).sp,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = SynctraColors.InkPrimary,
+                        letterSpacing = (-0.6).sp,
                     )
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = SynctraColors.PrimaryContainer,
-                    ) {
-                        Text(
-                            text = "OFFLINE",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp,
-                            color = SynctraColors.Primary,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                        )
-                    }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Cek selisih detik subtitle & film",
+                        fontSize = 13.sp,
+                        color = SynctraColors.InkMuted,
+                    )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Cek selisih detik subtitle vs film tanpa tebak-tebakan.",
-                    fontSize = 14.sp,
-                    color = SynctraColors.TextSecondary,
-                )
             }
 
-            // Step 1: Pick Movie / Video
-            val videoMetaLine = buildString {
+            // Unified Input Panel (Video + Multi-Audio Track Picker + Subtitle)
+            val videoMetaLine = buildList {
                 state.videoFile?.sizeBytes?.takeIf { it > 0 }?.let {
-                    append(DocumentMetaReader.formatFileSize(it))
+                    add(DocumentMetaReader.formatFileSize(it))
                 }
-                state.videoMeta?.let { meta ->
-                    if (isNotEmpty()) append(" · ")
-                    if (meta.durationMs > 0) {
-                        append(formatClock(meta.durationMs))
-                        append(" · ")
+                state.videoMeta?.durationMs?.takeIf { it > 0 }?.let {
+                    add(formatClock(it))
+                }
+                if ((state.videoMeta?.audioTracks?.size ?: 0) == 1) {
+                    state.selectedAudioTrack?.let { tr ->
+                        add(tr.technicalSummary)
                     }
-                    append(meta.audioCodecLabel)
                 }
-            }.ifBlank { null }
+            }.joinToString(" · ").ifBlank { null }
 
-            FilePickerCard(
-                stepNumber = "1",
-                title = "FILE FILM / VIDEO",
-                placeholder = "Pilih video (.mp4, .mkv, .avi, .webm)",
-                fileName = state.videoFile?.displayName,
-                metaBadge = videoMetaLine,
+            val subtitleMetaLine = state.cleanedPreviewStats?.let { stats ->
+                buildList {
+                    add(stats.format.displayName)
+                    add("${stats.dialogueCues.size} dialog")
+                    if (stats.totalFilteredCount > 0) {
+                        add("${stats.totalFilteredCount} iklan/SDH difilter")
+                    }
+                }.joinToString(" · ")
+            }
+
+            MediaInputSheet(
+                videoName = state.videoFile?.displayName,
+                videoMeta = videoMetaLine,
+                isProbingVideo = state.isProbingVideo,
+                audioTracks = state.videoMeta?.audioTracks.orEmpty(),
+                selectedAudioIndex = state.selectedAudioTrackIndex,
+                subtitleName = state.subtitleFile?.displayName,
+                subtitleMeta = subtitleMetaLine,
                 enabled = !state.isAnalyzing,
-                onClick = {
+                onPickVideo = {
                     videoPicker.launch(
                         arrayOf(
                             "video/*",
@@ -160,27 +164,8 @@ fun SynctraScreen(
                         )
                     )
                 },
-            )
-
-            // Step 2: Pick Subtitle
-            val subMetaLine = state.cleanedPreviewStats?.let { stats ->
-                buildString {
-                    append(stats.format.displayName)
-                    append(" · ${stats.dialogueCues.size} dialog")
-                    if (stats.totalFilteredCount > 0) {
-                        append(" (${stats.totalFilteredCount} iklan/kredit/SDH difilter)")
-                    }
-                }
-            }
-
-            FilePickerCard(
-                stepNumber = "2",
-                title = "FILE SUBTITLE",
-                placeholder = "Pilih subtitle (.srt, .ass, .ssa, .vtt)",
-                fileName = state.subtitleFile?.displayName,
-                metaBadge = subMetaLine,
-                enabled = !state.isAnalyzing,
-                onClick = {
+                onSelectAudioTrack = { viewModel.onAudioTrackSelected(it) },
+                onPickSubtitle = {
                     subtitlePicker.launch(
                         arrayOf(
                             "application/x-subrip",
@@ -193,14 +178,14 @@ fun SynctraScreen(
                 },
             )
 
-            // Primary Action Button or Progress Card
+            // Primary Action or Minimal Progress Strip
             if (state.isAnalyzing && state.progress != null) {
                 val prog = state.progress!!
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(14.dp),
                     color = SynctraColors.Surface,
-                    border = BorderStroke(1.dp, SynctraColors.Primary.copy(alpha = 0.4f)),
+                    border = BorderStroke(1.dp, SynctraColors.Hairline),
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
@@ -211,39 +196,37 @@ fun SynctraScreen(
                             Text(
                                 text = prog.stepTitle,
                                 fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = SynctraColors.TextPrimary,
+                                fontWeight = FontWeight.Medium,
+                                color = SynctraColors.InkPrimary,
                             )
                             Text(
                                 text = "${(prog.fraction * 100).toInt()}%",
                                 fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = SynctraColors.Primary,
+                                fontFamily = FontFamily.Monospace,
+                                color = SynctraColors.Accent,
                             )
                         }
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = prog.stepDetail,
                             fontSize = 12.sp,
-                            color = SynctraColors.TextSecondary,
+                            color = SynctraColors.InkMuted,
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         LinearProgressIndicator(
                             progress = { prog.fraction },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(6.dp),
-                            color = SynctraColors.Primary,
-                            trackColor = SynctraColors.SurfaceElevated,
+                                .height(3.dp),
+                            color = SynctraColors.Accent,
+                            trackColor = SynctraColors.SurfaceSubtle,
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
+                        Spacer(modifier = Modifier.height(6.dp))
+                        TextButton(
                             onClick = { viewModel.cancelAnalysis() },
                             modifier = Modifier.align(Alignment.End),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, SynctraColors.Border),
                         ) {
-                            Text("Batalkan", fontSize = 12.sp, color = SynctraColors.TextSecondary)
+                            Text("Batalkan", fontSize = 12.sp, color = SynctraColors.InkSecondary)
                         }
                     }
                 }
@@ -253,53 +236,55 @@ fun SynctraScreen(
                     enabled = state.canStartAnalysis,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
+                        .height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = SynctraColors.Primary,
-                        contentColor = SynctraColors.OnPrimary,
-                        disabledContainerColor = SynctraColors.SurfaceElevated,
-                        disabledContentColor = SynctraColors.TextMuted,
+                        containerColor = SynctraColors.ActionBg,
+                        contentColor = SynctraColors.ActionInk,
+                        disabledContainerColor = SynctraColors.SurfaceSubtle,
+                        disabledContentColor = SynctraColors.InkMuted,
                     ),
                 ) {
                     Text(
-                        text = if (state.result != null) "Cek Ulang Sinkronisasi" else "Cek Sinkronisasi",
+                        text = if (state.result != null) "Cek ulang" else "Cek sinkronisasi",
                         fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.SemiBold,
                     )
                 }
             }
 
-            // Error Banner
+            // Error callout (left-accent bar)
             AnimatedVisibility(visible = state.errorMessage != null) {
                 state.errorMessage?.let { err ->
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        color = SynctraColors.ErrorContainer,
-                        border = BorderStroke(1.dp, SynctraColors.Error.copy(alpha = 0.5f)),
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min)
+                            .background(SynctraColors.DangerDim, RoundedCornerShape(12.dp)),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = err,
-                                fontSize = 13.sp,
-                                color = SynctraColors.Error,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(onClick = { viewModel.dismissError() }) {
-                                Text("Tutup", fontSize = 12.sp, color = SynctraColors.TextPrimary)
-                            }
+                                .width(3.dp)
+                                .fillMaxHeight()
+                                .background(SynctraColors.Danger, RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)),
+                        )
+                        Text(
+                            text = err,
+                            fontSize = 13.sp,
+                            color = SynctraColors.InkPrimary,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                        )
+                        TextButton(onClick = { viewModel.dismissError() }) {
+                            Text("Tutup", fontSize = 12.sp, color = SynctraColors.Danger)
                         }
                     }
                 }
             }
 
-            // Result + Test Dengar 10 Detik
+            // Result + Test Dengar
             state.result?.let { syncResult ->
                 ResultCard(
                     result = syncResult,
@@ -315,6 +300,7 @@ fun SynctraScreen(
                     windows = syncResult.windowResults,
                     selectedWindowIndex = state.selectedPreviewWindowIndex,
                     manualNudgeMs = state.manualNudgeMs,
+                    audioTrackTitle = syncResult.audioTrackTitle.ifBlank { state.selectedAudioTrack?.displayTitle },
                     onSelectWindow = { viewModel.onSelectPreviewWindow(it) },
                     onTogglePlay = { viewModel.toggleAudioPreview() },
                     onNudgeOffset = { viewModel.nudgeOffset(it) },
@@ -322,7 +308,7 @@ fun SynctraScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }

@@ -21,6 +21,7 @@ object SyncAnalyzer {
         audioCodecUsed: String,
         usedFfmpegDecoder: Boolean,
         analysisDurationMs: Long,
+        audioTrackTitle: String = "",
     ): SyncResult {
         require(windowResults.isNotEmpty()) { "Minimal satu jendela sampel dibutuhkan." }
 
@@ -57,6 +58,7 @@ object SyncAnalyzer {
             windowResults = windowResults,
             drift = drift,
             audioCodecUsed = audioCodecUsed,
+            audioTrackTitle = audioTrackTitle,
             usedFfmpegDecoder = usedFfmpegDecoder,
             analysisDurationMs = analysisDurationMs,
             totalDialogueCues = cleanedSubtitles.dialogueCues.size,

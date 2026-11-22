@@ -1,5 +1,7 @@
 package com.synctra.app.domain.model
 
+import java.util.Locale
+
 /**
  * Represents a single parsed subtitle dialogue entry.
  */
@@ -17,7 +19,7 @@ enum class SubtitleFormat(val displayName: String) {
     SRT("SRT"),
     ASS("ASS / SSA"),
     VTT("WebVTT"),
-    UNKNOWN("Tidak Dikenal"),
+    UNKNOWN("Subtitle"),
 }
 
 data class ParsedSubtitleFile(
@@ -36,6 +38,96 @@ data class CleanedSubtitleSet(
 ) {
     val totalFilteredCount: Int
         get() = filteredAdOrCreditCount + filteredSdhCount + filteredEdgeCount
+}
+
+/**
+ * Represents a selectable audio track inside a multi-audio video container (e.g. MKV with English + Hindi).
+ */
+data class AudioTrackOption(
+    val audioIndex: Int,
+    val extractorTrackId: Int,
+    val mimeType: String,
+    val codecLabel: String,
+    val languageCode: String?,
+    val trackLabel: String?,
+    val channelCount: Int,
+    val sampleRate: Int,
+    val isDefault: Boolean,
+) {
+    val channelLayoutLabel: String
+        get() = when (channelCount) {
+            1 -> "Mono"
+            2 -> "2.0"
+            6 -> "5.1"
+            8 -> "7.1"
+            else -> "${channelCount}ch"
+        }
+
+    val languageDisplayName: String?
+        get() = resolveLanguageName(languageCode)
+
+    val displayTitle: String
+        get() {
+            val lang = languageDisplayName
+            val rawLabel = trackLabel?.trim()?.takeIf { it.isNotEmpty() }
+            return when {
+                rawLabel != null && lang != null && !rawLabel.contains(lang, ignoreCase = true) -> "$lang — $rawLabel"
+                rawLabel != null -> rawLabel
+                lang != null -> lang
+                else -> "Audio ${audioIndex + 1}"
+            }
+        }
+
+    val technicalSummary: String
+        get() = "$codecLabel · $channelLayoutLabel"
+
+    companion object {
+        private val bibliographicMap = mapOf(
+            "eng" to "English",
+            "hin" to "Hindi",
+            "ind" to "Indonesian",
+            "jpn" to "Japanese",
+            "kor" to "Korean",
+            "chi" to "Chinese",
+            "zho" to "Chinese",
+            "fre" to "French",
+            "fra" to "French",
+            "ger" to "German",
+            "deu" to "German",
+            "spa" to "Spanish",
+            "ita" to "Italian",
+            "por" to "Portuguese",
+            "rus" to "Russian",
+            "ara" to "Arabic",
+            "tha" to "Thai",
+            "vie" to "Vietnamese",
+            "may" to "Malay",
+            "msa" to "Malay",
+            "tam" to "Tamil",
+            "tel" to "Telugu",
+            "dut" to "Dutch",
+            "nld" to "Dutch",
+            "tur" to "Turkish",
+            "pol" to "Polish",
+            "cze" to "Czech",
+            "rum" to "Romanian",
+        )
+
+        internal fun resolveLanguageName(code: String?): String? {
+            val cleaned = code?.trim()?.lowercase(Locale.US)?.substringBefore('-')?.substringBefore('_')
+            if (cleaned.isNullOrBlank() || cleaned == "und" || cleaned == "zxx" || cleaned == "mul") {
+                return null
+            }
+            bibliographicMap[cleaned]?.let { return it }
+            val locale = Locale.forLanguageTag(cleaned)
+            val name = locale.getDisplayLanguage(Locale.ENGLISH)
+            return if (name.isNotBlank() && !name.equals(cleaned, ignoreCase = true) && !name.equals("Unknown language", ignoreCase = true)) {
+                name.replaceFirstChar { it.uppercaseChar() }
+            } else {
+                cleaned.uppercase(Locale.US)
+            }
+        }
+    }
 }
 
 /**
@@ -87,7 +179,7 @@ data class DriftAssessment(
 enum class ConfidenceLevel(val labelId: String) {
     HIGH("Akurasi Tinggi"),
     MEDIUM("Akurasi Sedang"),
-    LOW("Akurasi Rendah — Cek via Test Dengar"),
+    LOW("Akurasi Rendah"),
 }
 
 data class SyncResult(
@@ -99,6 +191,7 @@ data class SyncResult(
     val windowResults: List<WindowSyncResult>,
     val drift: DriftAssessment,
     val audioCodecUsed: String,
+    val audioTrackTitle: String = "",
     val usedFfmpegDecoder: Boolean,
     val analysisDurationMs: Long,
     val totalDialogueCues: Int,
@@ -112,11 +205,12 @@ data class SyncResult(
 
 data class MediaTrackInfo(
     val durationMs: Long,
-    val audioMimeType: String,
-    val sampleRate: Int,
-    val channelCount: Int,
-    val audioCodecLabel: String,
-)
+    val audioTracks: List<AudioTrackOption>,
+    val defaultAudioIndex: Int = 0,
+) {
+    val primaryAudio: AudioTrackOption?
+        get() = audioTracks.getOrNull(defaultAudioIndex) ?: audioTracks.firstOrNull()
+}
 
 data class SyncProgress(
     val stepTitle: String,

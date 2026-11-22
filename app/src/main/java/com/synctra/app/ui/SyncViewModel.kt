@@ -10,6 +10,7 @@ import com.synctra.app.data.file.SelectedFileInfo
 import com.synctra.app.data.media.AudioPreviewPlayer
 import com.synctra.app.data.media.AudioPreviewState
 import com.synctra.app.data.media.AudioSampleExtractor
+import com.synctra.app.domain.model.AudioTrackOption
 import com.synctra.app.domain.model.CleanedSubtitleSet
 import com.synctra.app.domain.model.MediaTrackInfo
 import com.synctra.app.domain.model.ParsedSubtitleFile
@@ -36,6 +37,8 @@ import kotlinx.coroutines.withContext
 data class SynctraUiState(
     val videoFile: SelectedFileInfo? = null,
     val videoMeta: MediaTrackInfo? = null,
+    val isProbingVideo: Boolean = false,
+    val selectedAudioTrackIndex: Int = 0,
     val subtitleFile: SelectedFileInfo? = null,
     val parsedSubtitle: ParsedSubtitleFile? = null,
     val cleanedPreviewStats: CleanedSubtitleSet? = null,
@@ -49,7 +52,11 @@ data class SynctraUiState(
     val activePreviewSubtitle: String? = null,
 ) {
     val canStartAnalysis: Boolean
-        get() = videoFile != null && subtitleFile != null && !isAnalyzing
+        get() = videoFile != null && subtitleFile != null && !isAnalyzing && !isProbingVideo
+
+    val selectedAudioTrack: AudioTrackOption?
+        get() = videoMeta?.audioTracks?.getOrNull(selectedAudioTrackIndex)
+            ?: videoMeta?.primaryAudio
 
     val effectiveOffsetMs: Long
         get() = (result?.offsetMs ?: 0L) + manualNudgeMs
@@ -99,19 +106,56 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     videoFile = info,
                     videoMeta = null,
+                    isProbingVideo = true,
+                    selectedAudioTrackIndex = 0,
                     result = null,
                     manualNudgeMs = 0L,
                     errorMessage = null,
                 )
             }
-            // Quick background probe so user immediately sees audio codec & duration
+
             runCatching {
                 withContext(Dispatchers.IO) { audioExtractor.probeMedia(uri) }
             }.onSuccess { meta ->
                 internalState.update { state ->
-                    if (state.videoFile?.uri == uri) state.copy(videoMeta = meta) else state
+                    if (state.videoFile?.uri == uri) {
+                        state.copy(
+                            videoMeta = meta,
+                            isProbingVideo = false,
+                            selectedAudioTrackIndex = meta.defaultAudioIndex,
+                        )
+                    } else {
+                        state
+                    }
+                }
+            }.onFailure { err ->
+                internalState.update { state ->
+                    if (state.videoFile?.uri == uri) {
+                        state.copy(
+                            isProbingVideo = false,
+                            errorMessage = err.localizedMessage ?: "Gagal membaca jalur audio dari video ini.",
+                        )
+                    } else {
+                        state
+                    }
                 }
             }
+        }
+    }
+
+    fun onAudioTrackSelected(audioIndex: Int) {
+        val state = internalState.value
+        val tracks = state.videoMeta?.audioTracks ?: return
+        if (audioIndex !in tracks.indices || audioIndex == state.selectedAudioTrackIndex) return
+
+        previewPlayer.stop()
+        internalState.update {
+            it.copy(
+                selectedAudioTrackIndex = audioIndex,
+                result = null,
+                manualNudgeMs = 0L,
+                errorMessage = null,
+            )
         }
     }
 
@@ -127,7 +171,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     val parsedSub = SubtitleParser.parse(bytes, fileInfo.displayName)
                     if (parsedSub.allCues.isEmpty()) {
                         throw IllegalArgumentException(
-                            "Tidak ada baris dialog yang valid di file subtitle ini. Pastikan formatnya .srt, .ass, atau .vtt."
+                            "Tidak ada baris dialog yang valid. Pastikan formatnya .srt, .ass, atau .vtt."
                         )
                     }
                     val cleanedSub = SubtitleCleaner.clean(
@@ -161,6 +205,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         val current = internalState.value
         val videoFile = current.videoFile ?: return
         val subtitleFile = current.subtitleFile ?: return
+        val chosenAudioIndex = current.selectedAudioTrackIndex
 
         previewPlayer.stop()
         analysisJob?.cancel()
@@ -174,8 +219,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     manualNudgeMs = 0L,
                     errorMessage = null,
                     progress = SyncProgress(
-                        stepTitle = "Menyiapkan analisis...",
-                        stepDetail = "Membaca metadata audio film & membersihkan iklan subtitle",
+                        stepTitle = "Menyiapkan analisis",
+                        stepDetail = "Membaca metadata audio & menyaring iklan subtitle",
                         fraction = 0.08f,
                     ),
                 )
@@ -183,10 +228,11 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
             try {
                 val result = withContext(Dispatchers.Default) {
-                    // 1. Ensure video metadata is probed
                     val mediaInfo = current.videoMeta ?: audioExtractor.probeMedia(videoFile.uri)
+                    val selectedTrack = mediaInfo.audioTracks.getOrNull(chosenAudioIndex)
+                        ?: mediaInfo.primaryAudio
+                        ?: throw IllegalStateException("Jalur audio tidak tersedia.")
 
-                    // 2. Parse & clean subtitles (filter ads, credits, URLs, SDH, intro/outro edges)
                     val parsed = current.parsedSubtitle ?: run {
                         val bytes = DocumentMetaReader.readAllBytes(appContext, subtitleFile.uri)
                         SubtitleParser.parse(bytes, subtitleFile.displayName)
@@ -199,7 +245,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         throw IllegalStateException("Tidak cukup dialog murni setelah filter iklan & kredit.")
                     }
 
-                    // 3. Plan interior multi-point sampling windows
                     val windows = WindowPlanner.planWindows(
                         mediaDurationMs = mediaInfo.durationMs,
                         dialogueCues = cleaned.dialogueCues,
@@ -208,10 +253,10 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         throw IllegalStateException("Durasi video tidak terbaca sehingga jendela sampel tidak dapat dibuat.")
                     }
 
-                    // 4. Extract audio-only speech activity envelopes (dual-path: MediaCodec + FFmpeg fallback)
                     val extractedWindows = audioExtractor.extractWindows(
                         uri = videoFile.uri,
                         windows = windows,
+                        selectedAudioIndex = selectedTrack.audioIndex,
                     ) { idx, total, win ->
                         val frac = 0.15f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.60f
                         internalState.update {
@@ -219,20 +264,19 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                                 videoMeta = mediaInfo,
                                 cleanedPreviewStats = cleaned,
                                 progress = SyncProgress(
-                                    stepTitle = "Mengambil sampel audio (${idx + 1}/$total)...",
-                                    stepDetail = "Menganalisis bagian ${win.label} (audio-only, skip video)",
+                                    stepTitle = "Sampel audio ${idx + 1} / $total",
+                                    stepDetail = "${selectedTrack.displayTitle} · ${win.label}",
                                     fraction = frac,
                                 ),
                             )
                         }
                     }
 
-                    // 5. Correlate each window against cleaned subtitle dialogue envelope
                     internalState.update {
                         it.copy(
                             progress = SyncProgress(
-                                stepTitle = "Mencocokkan pola dialog...",
-                                stepDetail = "Menghitung korelasi suara vs subtitle & mendeteksi drift FPS",
+                                stepTitle = "Mencocokkan pola dialog",
+                                stepDetail = "Korelasi suara vs subtitle & deteksi drift FPS",
                                 fraction = 0.85f,
                             ),
                         )
@@ -247,13 +291,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
 
-                    // Auto-expand search window to +/- 120 seconds if initial +/- 60s match was weak
                     val maxConf = windowSyncResults.maxOfOrNull { it.confidence } ?: 0f
                     if (maxConf < 0.35f) {
                         internalState.update {
                             it.copy(
                                 progress = SyncProgress(
-                                    stepTitle = "Memperluas pencarian offset (±2 menit)...",
+                                    stepTitle = "Memperluas pencarian (±2 menit)",
                                     stepDetail = "Mencari kemungkinan selisih besar hingga ±120 detik",
                                     fraction = 0.92f,
                                 ),
@@ -279,13 +322,13 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     SyncAnalyzer.aggregate(
                         windowResults = windowSyncResults,
                         cleanedSubtitles = cleaned,
-                        audioCodecUsed = mediaInfo.audioCodecLabel,
+                        audioCodecUsed = selectedTrack.technicalSummary,
+                        audioTrackTitle = selectedTrack.displayTitle,
                         usedFfmpegDecoder = usedFfmpeg,
                         analysisDurationMs = elapsedMs,
                     )
                 }
 
-                // Default Test Dengar checkpoint to the highest-confidence window
                 val bestWinIdx = result.windowResults
                     .withIndex()
                     .maxByOrNull { it.value.confidence }
@@ -302,10 +345,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (_: CancellationException) {
                 internalState.update {
-                    it.copy(
-                        isAnalyzing = false,
-                        progress = null,
-                    )
+                    it.copy(isAnalyzing = false, progress = null)
                 }
             } catch (e: Exception) {
                 internalState.update {
@@ -363,6 +403,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         previewPlayer.playClip(
             videoUri = videoUri,
             startMs = startMs,
+            selectedAudioIndex = state.selectedAudioTrackIndex,
             durationMs = AudioPreviewPlayer.DEFAULT_CLIP_DURATION_MS,
         )
     }
@@ -390,8 +431,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         audioPosMs: Long,
         appliedOffsetMs: Long,
     ): String? {
-        // Since newSubTime = originalSubTime + appliedOffsetMs,
-        // the original subtitle timestamp matching audioPosMs is: audioPosMs - appliedOffsetMs
         val targetSubMs = audioPosMs - appliedOffsetMs
         val active = cues.filter { targetSubMs in it.startMs..it.endMs }
         if (active.isEmpty()) return null
