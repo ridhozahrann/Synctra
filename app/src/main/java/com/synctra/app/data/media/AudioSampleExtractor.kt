@@ -144,6 +144,7 @@ class AudioSampleExtractor(private val context: Context) {
         val endUs = window.endMs * 1000L
 
         decoder.flush()
+        session.trackOutput.reset()
 
         var vad: SpeechActivityDetector? = null
         var collector: SpeechActivityDetector.StreamingCollector? = null
@@ -179,7 +180,7 @@ class AudioSampleExtractor(private val context: Context) {
         val positionHolder = PositionHolder()
 
         var readIterations = 0
-        val maxReadIterations = 250_000 // Safety guard against malformed containers
+        val maxReadIterations = 1_000_000 // Safety guard against malformed containers
 
         while (!windowFinished && readIterations < maxReadIterations) {
             readIterations++
@@ -454,18 +455,34 @@ class AudioSampleExtractor(private val context: Context) {
             ptsUs: Long,
             onPcm16: (ShortArray, Int, Int, Int, Long) -> Unit,
         ) {
-            val inIdx = codec.dequeueInputBuffer(10_000L)
-            if (inIdx >= 0) {
-                val inBuf = codec.getInputBuffer(inIdx)
-                if (inBuf != null && inBuf.capacity() >= size) {
-                    inBuf.clear()
-                    inBuf.put(data, 0, size)
-                    codec.queueInputBuffer(inIdx, 0, size, ptsUs, 0)
-                } else {
-                    codec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
+            if (size <= 0) return
+
+            var queued = false
+            for (attempt in 0 until 10) {
+                drainOutputs(onPcm16)
+                val inIdx = codec.dequeueInputBuffer(5_000L)
+                if (inIdx >= 0) {
+                    val inBuf = codec.getInputBuffer(inIdx)
+                    if (inBuf != null && inBuf.capacity() >= size) {
+                        inBuf.clear()
+                        inBuf.put(data, 0, size)
+                        codec.queueInputBuffer(inIdx, 0, size, ptsUs, 0)
+                    } else {
+                        codec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
+                    }
+                    queued = true
+                    break
                 }
             }
 
+            if (queued) {
+                drainOutputs(onPcm16)
+            }
+        }
+
+        private fun drainOutputs(
+            onPcm16: (ShortArray, Int, Int, Int, Long) -> Unit,
+        ) {
             while (true) {
                 val outIdx = codec.dequeueOutputBuffer(bufferInfo, 0L)
                 when {
@@ -476,7 +493,7 @@ class AudioSampleExtractor(private val context: Context) {
                             outBuf.limit(bufferInfo.offset + bufferInfo.size)
                             val count = bufferInfo.size / 2
                             val shorts = ShortArray(count)
-                            outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+                            outBuf.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
                             onPcm16(shorts, count, outChannels, outSampleRate, bufferInfo.presentationTimeUs)
                         }
                         codec.releaseOutputBuffer(outIdx, false)
@@ -509,6 +526,10 @@ class AudioSampleExtractor(private val context: Context) {
         private val packetAccumulator = ByteArrayOutputStream(16 * 1024)
         private val scratch = ByteArray(16 * 1024)
         var packetListener: ((data: ByteArray, size: Int, ptsUs: Long) -> Unit)? = null
+
+        fun reset() {
+            packetAccumulator.reset()
+        }
 
         override fun format(format: Format) {
             onFormatDiscovered(format)

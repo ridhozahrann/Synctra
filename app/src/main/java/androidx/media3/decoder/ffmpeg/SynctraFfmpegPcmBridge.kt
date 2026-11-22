@@ -28,11 +28,16 @@ class SynctraFfmpegPcmBridge private constructor(
         timeUs: Long,
         onPcm16: (samples: ShortArray, sampleCount: Int, channels: Int, sampleRate: Int, ptsUs: Long) -> Unit,
     ) {
-        val inputBuffer = dequeueInputWithRetry() ?: return
+        if (size <= 0) return
+
+        val inputBuffer = dequeueInputWithRetry(onPcm16) ?: return
         inputBuffer.clear()
         inputBuffer.ensureSpaceForWrite(size)
-        inputBuffer.data?.put(data, 0, size)
+        val buf = inputBuffer.data ?: return
+        buf.put(data, 0, size)
         inputBuffer.timeUs = timeUs
+        // Crucial: FfmpegAudioDecoder reads inputBuffer.data.limit() as packet byte length!
+        inputBuffer.flip()
         decoder.queueInputBuffer(inputBuffer)
 
         drainAvailableOutputs(onPcm16)
@@ -45,10 +50,11 @@ class SynctraFfmpegPcmBridge private constructor(
     fun drainEndOfStream(
         onPcm16: (samples: ShortArray, sampleCount: Int, channels: Int, sampleRate: Int, ptsUs: Long) -> Unit,
     ) {
-        val eosBuffer = dequeueInputWithRetry()
+        val eosBuffer = dequeueInputWithRetry(onPcm16)
         if (eosBuffer != null) {
             eosBuffer.clear()
             eosBuffer.setFlags(C.BUFFER_FLAG_END_OF_STREAM)
+            eosBuffer.flip()
             decoder.queueInputBuffer(eosBuffer)
         }
         // Poll briefly for any final output buffers
@@ -65,16 +71,14 @@ class SynctraFfmpegPcmBridge private constructor(
         }
     }
 
-    private fun dequeueInputWithRetry(): androidx.media3.decoder.DecoderInputBuffer? {
-        for (attempt in 0 until 100) {
+    private fun dequeueInputWithRetry(
+        onPcm16: (samples: ShortArray, sampleCount: Int, channels: Int, sampleRate: Int, ptsUs: Long) -> Unit,
+    ): androidx.media3.decoder.DecoderInputBuffer? {
+        for (attempt in 0 until 200) {
+            // Drain ready outputs first so the decoder's output queue never stalls
+            drainAvailableOutputs(onPcm16)
             val buf = decoder.dequeueInputBuffer()
             if (buf != null) return buf
-            // Drain outputs if decoder output queue is full
-            var out = decoder.dequeueOutputBuffer()
-            while (out != null) {
-                out.release()
-                out = decoder.dequeueOutputBuffer()
-            }
             Thread.sleep(1)
         }
         return null
@@ -95,13 +99,14 @@ class SynctraFfmpegPcmBridge private constructor(
         out: androidx.media3.decoder.SimpleDecoderOutputBuffer,
         onPcm16: (samples: ShortArray, sampleCount: Int, channels: Int, sampleRate: Int, ptsUs: Long) -> Unit,
     ) {
+        if (out.shouldBeSkipped || out.isEndOfStream) return
         val byteBuf = out.data ?: return
         val remaining = byteBuf.remaining()
         if (remaining < 2) return
 
         val shortCount = remaining / 2
         val shorts = ShortArray(shortCount)
-        byteBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+        byteBuf.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         onPcm16(shorts, shortCount, channelCount, sampleRate, out.timeUs)
     }
 
