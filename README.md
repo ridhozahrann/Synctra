@@ -1,37 +1,52 @@
 # Synctra
 
-Aplikasi Android ringan & 100% offline untuk mengecek selisih detik (*offset*) antara file subtitle (`.srt`, `.ass`/`.ssa`, `.vtt`) dan file film (`.mp4`, `.mkv`, `.avi`, `.webm`) tanpa perlu tebak-tebakan manual di pemutar video.
+Offline Android app that calculates the exact timing offset (in seconds and milliseconds) between a movie file and an external subtitle file.
 
-## Fitur Utama
+Instead of guessing subtitle delay values by trial and error inside VLC, MX Player, or Nova Video Player, Synctra samples the movie's audio track, matches spoken dialogue against the subtitle timeline, and tells you the exact delay to enter.
 
-- **Audio-Only Multi-Point Sampling:** Hanya mengekstrak & menganalisis 3 potongan pendek di bagian tengah film (~20%, ~50%, ~75%) tanpa decode video — cepat, hemat RAM, dan otomatis melewati intro/kredit akhir.
-- **Anti-Iklan & Filter SDH Otomatis:** Menyaring baris iklan situs, kredit penerjemah, URL, serta teks non-dialog (`[musik]`, `♪`, dsb.) sebelum pencocokan.
-- **Dukungan Codec Audio Luas (Opsi B):** Menggunakan Media3 + ekstensi `org.jellyfin.media3:media3-ffmpeg-decoder` (audio-only) sehingga file `.mkv` dengan audio AC-3, E-AC-3, DTS, TrueHD, AAC, Opus, MP3, FLAC, dan ALAC tetap terbaca.
-- **Deteksi Drift / Beda FPS:** Membandingkan offset antar titik sampel untuk mendeteksi ketidaksinkronan bertahap (misal 23.976 fps vs 25 fps atau beda versi rilis).
-- **Test Dengar 10 Detik:** Preview audio-only sinkron dengan teks subtitle real-time + tombol geser halus (`±0.1s` / `±0.5s`) untuk memastikan angka offset benar-benar pas.
-- **Tanpa Izin Storage Sensitif:** Menggunakan Android Storage Access Framework (`OpenDocument`).
+## How it works
 
-## Arsitektur Singkat
+1. **Subtitle cleanup:** Parses `.srt`, `.ass`/`.ssa`, and `.vtt` files (UTF-8/BOM, UTF-16, Windows-1252) and strips out website ads, translator credits, URLs, SDH cues (`[music]`, `♪`), and intro/outro edges before alignment.
+2. **Audio-only sampling:** Skips video decoding completely. For full-length movies, it seeks to three dialogue-dense 90-second segments in the interior (~20%, ~50%, ~75% of duration), avoiding intro logos and end credits.
+3. **Speech detection & correlation:** Runs a streaming voice-band detector (300–3400 Hz Butterworth bandpass + syllabic modulation, 20 ms frames) and a two-stage Radix-2 FFT normalized cross-correlation (±60 s, auto-expanding to ±120 s) with parabolic peak refinement.
+4. **Drift check:** Compares offsets across the sampled checkpoints to flag progressive drift (e.g. 23.976 fps vs 25 fps or mismatched cuts).
+5. **10-second audio preview:** Plays a short audio-only clip synced with live subtitle text and `±0.1s` / `±0.5s` nudge buttons so you can verify the result by ear.
 
-- `domain/subtitle/`: [`SubtitleParser`](app/src/main/java/com/synctra/app/domain/subtitle/SubtitleParser.kt) (SRT, ASS/SSA, WebVTT + fallback encoding) & [`SubtitleCleaner`](app/src/main/java/com/synctra/app/domain/subtitle/SubtitleCleaner.kt) (filter iklan/kredit/SDH).
-- `domain/audio/`: [`SpeechActivityDetector`](app/src/main/java/com/synctra/app/domain/audio/SpeechActivityDetector.kt) (streaming VAD dengan filter Butterworth bandpass 300–3400 Hz + modulasi silabis).
-- `domain/sync/`: [`WindowPlanner`](app/src/main/java/com/synctra/app/domain/sync/WindowPlanner.kt), [`FftCrossCorrelator`](app/src/main/java/com/synctra/app/domain/sync/FftCrossCorrelator.kt) (Radix-2 FFT coarse-to-fine + interpolasi parabolik ~10 ms), & [`SyncAnalyzer`](app/src/main/java/com/synctra/app/domain/sync/SyncAnalyzer.kt) (konsensus berbobot + deteksi drift FPS).
-- `data/media/`: [`AudioSampleExtractor`](app/src/main/java/com/synctra/app/data/media/AudioSampleExtractor.kt) (Media3 container extractors + `MediaCodec` / [`SynctraFfmpegPcmBridge`](app/src/main/java/androidx/media3/decoder/ffmpeg/SynctraFfmpegPcmBridge.kt) fallback) & [`AudioPreviewPlayer`](app/src/main/java/com/synctra/app/data/media/AudioPreviewPlayer.kt) (audio-only ExoPlayer).
-- `ui/`: Jetpack Compose Material 3 dark UI ([`SynctraScreen`](app/src/main/java/com/synctra/app/ui/SynctraScreen.kt), [`SyncViewModel`](app/src/main/java/com/synctra/app/ui/SyncViewModel.kt)).
+## Offset sign convention
 
-## Build & Test
+`offset = audio_time - subtitle_time`
+
+- **Positive (`+2.40s`):** Subtitle appears too early → add `+2.40s` delay in VLC / MX Player / Nova.
+- **Negative (`-1.35s`):** Subtitle appears too late → set `-1.35s` in your player.
+
+## Supported formats
+
+- **Containers:** `.mp4`, `.mkv`, `.avi`, `.webm`, `.mov`, `.ts` (via AndroidX Media3 extractors)
+- **Audio codecs:** AAC, MP3, Opus, Vorbis, FLAC, PCM via native `MediaCodec`, with automatic fallback to `org.jellyfin.media3:media3-ffmpeg-decoder` for AC-3, E-AC-3, DTS, TrueHD, and ALAC
+- **Subtitles:** `.srt`, `.ass`, `.ssa`, `.vtt`
+- **Minimum Android version:** Android 7.0 (API 24), no storage permissions required (uses Android's document picker)
+
+## Download
+
+Grab the latest signed universal APK (~7 MB) from [Releases](https://github.com/ridhozahrann/Synctra/releases).
+
+## Building from source
+
+Requires JDK 21 and Android SDK (API 35).
 
 ```bash
-# Jalankan unit test
+# Run unit tests
 ./gradlew :app:testDebugUnitTest
 
-# Build Debug APK
+# Build debug APK
 ./gradlew :app:assembleDebug
 
-# Build Release APK (minified + shrunk)
+# Build minified release APK
 ./gradlew :app:assembleRelease
 ```
 
-## Lisensi Pihak Ketiga
+## Tech stack
 
-Proyek ini menggunakan `org.jellyfin.media3:media3-ffmpeg-decoder` (GPL-3.0) untuk dekoding audio FFmpeg di AndroidX Media3.
+- Kotlin, Jetpack Compose (Material 3), Coroutines
+- AndroidX Media3 (`media3-exoplayer`, `media3-extractor`, `media3-datasource`)
+- [`org.jellyfin.media3:media3-ffmpeg-decoder`](https://github.com/jellyfin/jellyfin-androidx-media) (GPL-3.0) for software audio decoding
