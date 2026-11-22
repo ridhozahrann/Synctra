@@ -1,0 +1,74 @@
+package com.synctra.app
+
+import com.synctra.app.domain.model.CleanedSubtitleSet
+import com.synctra.app.domain.model.DriftSeverity
+import com.synctra.app.domain.model.SampleWindow
+import com.synctra.app.domain.model.SubtitleCue
+import com.synctra.app.domain.model.SubtitleFormat
+import com.synctra.app.domain.model.WindowSyncResult
+import com.synctra.app.domain.sync.SyncAnalyzer
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.math.abs
+
+class SyncAnalyzerTest {
+
+    private val dummySubtitles = CleanedSubtitleSet(
+        format = SubtitleFormat.SRT,
+        allCues = List(20) { i ->
+            val t = 1_800_000L + i * 4_000L
+            SubtitleCue(i + 1, t, t + 2_000L, "Line $i", "Line $i")
+        },
+        dialogueCues = List(20) { i ->
+            val t = 1_800_000L + i * 4_000L
+            SubtitleCue(i + 1, t, t + 2_000L, "Line $i", "Line $i")
+        },
+        filteredAdOrCreditCount = 2,
+        filteredSdhCount = 1,
+        filteredEdgeCount = 0,
+    )
+
+    @Test
+    fun rejectsNoisyOutlierWindowAndReturnsAccurateConsensus() {
+        val windows = listOf(
+            WindowSyncResult(SampleWindow(0, "Awal", 1_000_000L, 90_000L), offsetMs = 2_420L, confidence = 0.88f, peakProminence = 6.2f, speechRatio = 0.42f),
+            WindowSyncResult(SampleWindow(1, "Tengah", 2_700_000L, 90_000L), offsetMs = -9_500L, confidence = 0.25f, peakProminence = 1.9f, speechRatio = 0.10f),
+            WindowSyncResult(SampleWindow(2, "Akhir", 4_300_000L, 90_000L), offsetMs = 2_380L, confidence = 0.84f, peakProminence = 5.8f, speechRatio = 0.39f),
+        )
+
+        val result = SyncAnalyzer.aggregate(
+            windowResults = windows,
+            cleanedSubtitles = dummySubtitles,
+            audioCodecUsed = "AC-3",
+            usedFfmpegDecoder = true,
+            analysisDurationMs = 4_200L,
+        )
+
+        assertTrue("Expected consensus near +2400ms, got ${result.offsetMs}", abs(result.offsetMs - 2_400L) <= 50L)
+    }
+
+    @Test
+    fun detectsSevereFpsDriftBetween23976And25Fps() {
+        // 23.976 vs 25 fps => ~153.7s drift per hour (~42.7ms per second)
+        // Over 1 hour (from t=0.3h to t=1.3h), offset shifts by ~153,000 ms
+        val windows = listOf(
+            WindowSyncResult(SampleWindow(0, "Awal", 1_080_000L, 90_000L), offsetMs = 1_000L, confidence = 0.85f, peakProminence = 5.5f, speechRatio = 0.40f),
+            WindowSyncResult(SampleWindow(1, "Tengah", 2_880_000L, 90_000L), offsetMs = 77_500L, confidence = 0.85f, peakProminence = 5.5f, speechRatio = 0.40f),
+            WindowSyncResult(SampleWindow(2, "Akhir", 4_680_000L, 90_000L), offsetMs = 154_000L, confidence = 0.85f, peakProminence = 5.5f, speechRatio = 0.40f),
+        )
+
+        val result = SyncAnalyzer.aggregate(
+            windowResults = windows,
+            cleanedSubtitles = dummySubtitles,
+            audioCodecUsed = "AAC",
+            usedFfmpegDecoder = false,
+            analysisDurationMs = 3_800L,
+        )
+
+        assertEquals(DriftSeverity.SEVERE, result.drift.severity)
+        assertNotNull(result.drift.suspectedCause)
+        assertTrue(result.drift.suspectedCause!!.contains("25 fps"))
+    }
+}

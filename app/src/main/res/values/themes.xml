@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.Synctra" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#FF0B0F17</item>
+        <item name="android:navigationBarColor">#FF0B0F17</item>
+    </style>
+</resources>
