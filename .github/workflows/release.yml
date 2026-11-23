@@ -104,19 +104,23 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" --clobber
           else
-            gh release create "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" \
-              --title "Synctra $TAG_NAME" \
-              --notes "## Synctra $TAG_NAME
+            NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+            cat <<EOF > "$NOTES_FILE"
+          ## Synctra $TAG_NAME
 
           Offline Android subtitle sync checker.
 
           ### Downloads
-          - **\`Synctra-${TAG_NAME}-arm64-v8a.apk\`** (~3 MB) — recommended for almost all modern 64-bit Android phones.
-          - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
+          - **\`Synctra-${TAG_NAME}-arm64-v8a.apk\`** (~2.9 MB) — recommended for almost all modern 64-bit Android phones.
+          - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7.2 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
           ### What's new in $TAG_NAME
           - Fixed 10-second Audio Check getting stuck on "Loading audio..." when replaying an already-buffered clip
           - Made Cancel stop background audio extraction/decoding immediately
           - Preserved pending \`.srt\` export options across screen rotation / Activity recreation while the Android file picker is open
-          - Auto-pause Audio Check preview when leaving the app, and hardened SRT/VTT parsing for files missing blank lines between cues"
+          - Auto-pause Audio Check preview when leaving the app, and hardened SRT/VTT parsing for files missing blank lines between cues
+          EOF
+            gh release create "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" \
+              --title "Synctra $TAG_NAME" \
+              --notes-file "$NOTES_FILE"
           fi
