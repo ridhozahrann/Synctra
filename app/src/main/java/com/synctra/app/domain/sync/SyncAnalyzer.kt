@@ -3,15 +3,18 @@ package com.synctra.app.domain.sync
 import com.synctra.app.domain.model.CleanedSubtitleSet
 import com.synctra.app.domain.model.ConfidenceLevel
 import com.synctra.app.domain.model.DriftAssessment
+import com.synctra.app.domain.model.DriftCauseKey
 import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.SubtitleCue
 import com.synctra.app.domain.model.SyncResult
 import com.synctra.app.domain.model.WindowSyncResult
 import kotlin.math.abs
+import kotlin.math.roundToLong
 
 /**
  * Aggregates per-window cross-correlation measurements into a single consensus offset,
- * detects progressive drift / FPS mismatches, and chooses the best scene for Test Dengar.
+ * performs outlier-resistant subtitle-time drift regression (or consumes an exact matched
+ * cinema FPS ratio from [FpsStretchMatcher]), and chooses the best scene for Test Dengar.
  */
 object SyncAnalyzer {
 
@@ -22,33 +25,41 @@ object SyncAnalyzer {
         usedFfmpegDecoder: Boolean,
         analysisDurationMs: Long,
         audioTrackTitle: String = "",
+        matchedFpsCandidate: CinemaFpsCandidate? = null,
+        matchedBaseOffsetMs: Long = 0L,
     ): SyncResult {
         require(windowResults.isNotEmpty()) { "Minimal satu jendela sampel dibutuhkan." }
 
-        // Sort by quality weight (confidence * prominence)
         val validWindows = windowResults.filter { it.confidence >= 0.18f }
             .ifEmpty { listOf(windowResults.maxBy { it.confidence }) }
 
         val consensusOffsetMs = computeConsensusOffset(validWindows)
-        val drift = assessDrift(validWindows)
+        val drift = if (matchedFpsCandidate != null) {
+            buildMatchedFpsDrift(windowResults, matchedFpsCandidate, matchedBaseOffsetMs)
+        } else {
+            assessDrift(windowResults)
+        }
 
-        // Overall confidence: boosted when multiple windows agree, slightly damped when severe drift exists
         val avgConf = validWindows.map { it.confidence }.average().toFloat()
-        val agreementBoost = if (validWindows.size >= 2 && drift.severity == DriftSeverity.NONE) 0.10f else 0f
+        val agreementBoost = when {
+            matchedFpsCandidate != null && validWindows.size >= 2 -> 0.12f
+            validWindows.size >= 2 && drift.severity == DriftSeverity.NONE -> 0.10f
+            else -> 0f
+        }
         val finalConfidence = (avgConf + agreementBoost).coerceIn(0f, 0.99f)
 
         val confidenceLevel = when {
-            finalConfidence >= 0.68f && drift.severity != DriftSeverity.SEVERE -> ConfidenceLevel.HIGH
+            finalConfidence >= 0.68f && (drift.severity != DriftSeverity.SEVERE || drift.isLinearStretch) -> ConfidenceLevel.HIGH
             finalConfidence >= 0.38f -> ConfidenceLevel.MEDIUM
             else -> ConfidenceLevel.LOW
         }
 
-        // Pick best timestamp inside the highest-confidence window that has rich dialogue right there
         val bestWindow = validWindows.maxBy { it.confidence * (1f + it.peakProminence * 0.2f) }
         val previewAudioMs = pickPreviewTimestamp(
             window = bestWindow,
-            offsetMs = consensusOffsetMs,
+            offsetMs = bestWindow.offsetMs,
             cues = cleanedSubtitles.dialogueCues,
+            drift = drift,
         )
 
         return SyncResult(
@@ -67,13 +78,49 @@ object SyncAnalyzer {
         )
     }
 
+    private fun buildMatchedFpsDrift(
+        windows: List<WindowSyncResult>,
+        candidate: CinemaFpsCandidate,
+        baseOffsetMs: Long,
+    ): DriftAssessment {
+        val slopeMsPerMs = candidate.speedRatio - 1.0
+        val driftMsPerHour = slopeMsPerMs * 3_600_000.0
+        val spreadMs = if (windows.size >= 2) {
+            windows.maxOf { it.offsetMs } - windows.minOf { it.offsetMs }
+        } else {
+            0L
+        }
+        val severity = if (abs(driftMsPerHour) >= 5_000.0 || spreadMs >= 1_500L) {
+            DriftSeverity.SEVERE
+        } else {
+            DriftSeverity.MILD
+        }
+        val suspectedCause = when (candidate.causeKey) {
+            DriftCauseKey.FPS_23976_VS_25 -> "Terdeteksi beda FPS (${candidate.label})"
+            DriftCauseKey.FPS_23976_VS_24 -> "Terdeteksi beda FPS tipis (${candidate.label})"
+            else -> "Terdeteksi beda kecepatan (${candidate.label})"
+        }
+        return DriftAssessment(
+            severity = severity,
+            driftMsPerHour = driftMsPerHour,
+            spreadMs = spreadMs,
+            suspectedCause = suspectedCause,
+            causeKey = candidate.causeKey,
+            // Exact linear mapping from subtitle t=0: t_audio = t_sub * speedRatio + baseOffsetMs
+            anchorTimeMs = 0L,
+            anchorOffsetMs = baseOffsetMs,
+            speedRatio = candidate.speedRatio,
+            isLinearStretch = true,
+            detectedFpsLabel = candidate.label,
+        )
+    }
+
     /**
-     * Weighted median consensus so a single noisy action window cannot skew the offset.
+     * Weighted median / cluster consensus so a single noisy action window cannot skew the offset.
      */
     internal fun computeConsensusOffset(windows: List<WindowSyncResult>): Long {
         if (windows.size == 1) return windows.first().offsetMs
 
-        // If 3+ windows and 2+ agree within 350ms, average the inlier cluster
         if (windows.size >= 3) {
             var bestCluster: List<WindowSyncResult> = emptyList()
             var bestWeight = -1.0
@@ -92,7 +139,6 @@ object SyncAnalyzer {
             }
         }
 
-        // Weighted median fallback (ideal when there's drift: gives midpoint offset)
         val sorted = windows.sortedBy { it.offsetMs }
         val totalWeight = sorted.sumOf { it.confidence.toDouble().coerceAtLeast(0.05) }
         var acc = 0.0
@@ -103,6 +149,10 @@ object SyncAnalyzer {
         return sorted[sorted.size / 2].offsetMs
     }
 
+    /**
+     * Outlier-resistant weighted least-squares drift assessment regressed directly on
+     * SUBTITLE time (`t_sub = window.centerMs - offsetMs`) so exported timestamps match exactly.
+     */
     internal fun assessDrift(windows: List<WindowSyncResult>): DriftAssessment {
         if (windows.size < 2) {
             return DriftAssessment(
@@ -113,26 +163,58 @@ object SyncAnalyzer {
             )
         }
 
-        val sortedByTime = windows.sortedBy { it.window.centerMs }
-        val minOffset = sortedByTime.minOf { it.offsetMs }
-        val maxOffset = sortedByTime.maxOf { it.offsetMs }
+        // Only trust reliable windows so a single noisy low-confidence action scene cannot trigger false drift!
+        val maxConf = windows.maxOf { it.confidence }
+        val minAllowedConf = maxOf(0.40f, maxConf * 0.55f)
+        val reliable = windows
+            .filter { it.confidence >= minAllowedConf }
+            .sortedBy { it.window.centerMs }
+
+        if (reliable.size < 2) {
+            return DriftAssessment(
+                severity = DriftSeverity.NONE,
+                driftMsPerHour = 0.0,
+                spreadMs = 0L,
+                suspectedCause = null,
+            )
+        }
+
+        val minOffset = reliable.minOf { it.offsetMs }
+        val maxOffset = reliable.maxOf { it.offsetMs }
         val spreadMs = maxOffset - minOffset
 
-        // Ordinary least squares slope: offsetMs as a function of timeHours
-        val xs = sortedByTime.map { it.window.centerMs / 3_600_000.0 }
-        val ys = sortedByTime.map { it.offsetMs.toDouble() }
-        val meanX = xs.average()
-        val meanY = ys.average()
+        // Weighted least-squares on SUBTITLE timeline:
+        // x_i = t_sub_i = audioCenter_i - offset_i (in ms)
+        // y_i = offset_i (in ms)
+        val xs = reliable.map { (it.window.centerMs - it.offsetMs).toDouble() }
+        val ys = reliable.map { it.offsetMs.toDouble() }
+        val ws = reliable.map { (it.confidence * it.confidence).toDouble().coerceAtLeast(0.01) }
+
+        val sumW = ws.sum()
+        val meanX = xs.indices.sumOf { ws[it] * xs[it] } / sumW
+        val meanY = ys.indices.sumOf { ws[it] * ys[it] } / sumW
 
         var num = 0.0
         var den = 0.0
         for (i in xs.indices) {
             val dx = xs[i] - meanX
-            num += dx * (ys[i] - meanY)
-            den += dx * dx
+            num += ws[i] * dx * (ys[i] - meanY)
+            den += ws[i] * dx * dx
         }
-        val slopeMsPerHour = if (den > 1e-6) num / den else 0.0
+        val slopeMsPerMs = if (den > 1e-3) num / den else 0.0
+        val slopeMsPerHour = slopeMsPerMs * 3_600_000.0
         val absSlope = abs(slopeMsPerHour)
+
+        // Check linearity when 3+ reliable checkpoints exist:
+        // If 2 windows agree closely and 1 jumps abruptly, it's a scene cut (not linear FPS stretch).
+        val maxResidualMs = if (reliable.size >= 3) {
+            xs.indices.maxOf { i ->
+                val predicted = meanY + slopeMsPerMs * (xs[i] - meanX)
+                abs(ys[i] - predicted)
+            }
+        } else {
+            0.0
+        }
 
         val severity = when {
             spreadMs >= 1_500L || absSlope >= 5_000.0 -> DriftSeverity.SEVERE
@@ -140,36 +222,79 @@ object SyncAnalyzer {
             else -> DriftSeverity.NONE
         }
 
-        val causePair = when (severity) {
-            DriftSeverity.NONE -> null
-            DriftSeverity.MILD, DriftSeverity.SEVERE -> classifyDriftCause(absSlope, spreadMs)
+        if (severity == DriftSeverity.NONE) {
+            return DriftAssessment(
+                severity = DriftSeverity.NONE,
+                driftMsPerHour = slopeMsPerHour,
+                spreadMs = spreadMs,
+                suspectedCause = null,
+                anchorTimeMs = meanX.roundToLong(),
+                anchorOffsetMs = meanY.roundToLong(),
+                speedRatio = 1.0,
+                isLinearStretch = false,
+            )
         }
+
+        // Linear fit is valid if slope is meaningful and residual deviation is small relative to spread
+        val isLinear = (reliable.size == 2 && absSlope >= 1_200.0) ||
+            (reliable.size >= 3 && maxResidualMs <= maxOf(500.0, spreadMs * 0.22) && absSlope >= 1_200.0)
+
+        val (causeKey, causeText, fpsLabel) = classifyDriftCause(absSlope, spreadMs, isLinear, slopeMsPerMs)
 
         return DriftAssessment(
             severity = severity,
             driftMsPerHour = slopeMsPerHour,
             spreadMs = spreadMs,
-            suspectedCause = causePair?.second,
-            causeKey = causePair?.first,
-            anchorTimeMs = (meanX * 3_600_000.0).toLong(),
-            anchorOffsetMs = meanY.toLong(),
+            suspectedCause = causeText,
+            causeKey = causeKey,
+            anchorTimeMs = meanX.roundToLong(),
+            anchorOffsetMs = meanY.roundToLong(),
+            speedRatio = 1.0 + slopeMsPerMs,
+            isLinearStretch = isLinear,
+            detectedFpsLabel = fpsLabel,
         )
     }
 
-    private fun classifyDriftCause(absSlopeMsPerHour: Double, spreadMs: Long): Pair<com.synctra.app.domain.model.DriftCauseKey, String> {
+    private fun classifyDriftCause(
+        absSlopeMsPerHour: Double,
+        spreadMs: Long,
+        isLinear: Boolean,
+        slopeMsPerMs: Double,
+    ): Triple<DriftCauseKey, String, String?> {
+        if (!isLinear && spreadMs >= 1_500L) {
+            return Triple(
+                DriftCauseKey.DIFFERENT_CUT,
+                "Kemungkinan beda versi rilis (Theatrical vs Extended / potongan adegan berbeda)",
+                null,
+            )
+        }
         return when {
-            absSlopeMsPerHour in 120_000.0..185_000.0 ->
-                com.synctra.app.domain.model.DriftCauseKey.FPS_23976_VS_25 to
-                    "Kemungkinan besar beda FPS (23.976 fps vs 25 fps)"
-            absSlopeMsPerHour in 2_200.0..5_500.0 ->
-                com.synctra.app.domain.model.DriftCauseKey.FPS_23976_VS_24 to
-                    "Kemungkinan beda FPS tipis (23.976 fps vs 24 fps)"
-            spreadMs >= 2_000L ->
-                com.synctra.app.domain.model.DriftCauseKey.DIFFERENT_CUT to
-                    "Kemungkinan beda versi rilis (misal Theatrical vs Extended / beda potongan iklan)"
-            else ->
-                com.synctra.app.domain.model.DriftCauseKey.GRADUAL_SHIFT to
-                    "Offset bergeser bertahap — cek beberapa titik di Test Dengar"
+            absSlopeMsPerHour in 120_000.0..185_000.0 -> {
+                val label = if (slopeMsPerMs > 0) "25 → 23.976 fps" else "23.976 → 25 fps"
+                Triple(
+                    DriftCauseKey.FPS_23976_VS_25,
+                    "Kemungkinan besar beda FPS ($label)",
+                    label,
+                )
+            }
+            absSlopeMsPerHour in 2_200.0..5_500.0 -> {
+                val label = if (slopeMsPerMs > 0) "24 → 23.976 fps" else "23.976 → 24 fps"
+                Triple(
+                    DriftCauseKey.FPS_23976_VS_24,
+                    "Kemungkinan beda FPS tipis ($label)",
+                    label,
+                )
+            }
+            spreadMs >= 2_000L -> Triple(
+                DriftCauseKey.DIFFERENT_CUT,
+                "Kemungkinan beda versi rilis (misal Theatrical vs Extended / beda potongan iklan)",
+                null,
+            )
+            else -> Triple(
+                DriftCauseKey.GRADUAL_SHIFT,
+                "Offset bergeser bertahap — cek beberapa titik di Test Dengar",
+                null,
+            )
         }
     }
 
@@ -180,6 +305,7 @@ object SyncAnalyzer {
         window: WindowSyncResult,
         offsetMs: Long,
         cues: List<SubtitleCue>,
+        drift: DriftAssessment? = null,
     ): Long {
         val winStart = window.window.startMs
         val winEnd = (window.window.endMs - 10_000L).coerceAtLeast(winStart)
@@ -190,8 +316,11 @@ object SyncAnalyzer {
 
         var pos = winStart
         while (pos <= winEnd) {
-            // Audio range [pos, pos + 10_000] corresponds to original subtitle times [pos - offsetMs, pos + 10_000 - offsetMs]
-            val subStart = pos - offsetMs
+            val subStart = if (drift != null && drift.isLinearStretch && drift.severity != DriftSeverity.NONE) {
+                audioTimeToOriginalSubtitleTime(pos, drift, manualNudgeMs = 0L)
+            } else {
+                pos - offsetMs
+            }
             val subEnd = subStart + 10_000L
             val count = cues.count { it.startMs >= subStart && it.startMs <= subEnd - 1_500L }
             if (count > bestCueCount) {
@@ -201,5 +330,22 @@ object SyncAnalyzer {
             pos += 5_000L
         }
         return bestPos
+    }
+
+    /**
+     * Maps an audio playback position back to the original subtitle timeline when linear FPS stretch applies.
+     * Inverse of: t_audio = t_sub + anchorOffset + (speedRatio - 1) * (t_sub - anchorTime) + manualNudgeMs
+     */
+    fun audioTimeToOriginalSubtitleTime(
+        audioPosMs: Long,
+        drift: DriftAssessment,
+        manualNudgeMs: Long,
+    ): Long {
+        val s = drift.speedRatio
+        if (abs(s - 1.0) < 1e-7) {
+            return audioPosMs - (drift.anchorOffsetMs + manualNudgeMs)
+        }
+        val anchorAudioMs = drift.anchorTimeMs + drift.anchorOffsetMs + manualNudgeMs
+        return drift.anchorTimeMs + ((audioPosMs - anchorAudioMs) / s).roundToLong()
     }
 }

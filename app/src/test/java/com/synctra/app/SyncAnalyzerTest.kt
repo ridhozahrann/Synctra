@@ -68,7 +68,8 @@ class SyncAnalyzerTest {
         )
 
         assertEquals(DriftSeverity.SEVERE, result.drift.severity)
+        assertEquals(com.synctra.app.domain.model.DriftCauseKey.FPS_23976_VS_25, result.drift.causeKey)
         assertNotNull(result.drift.suspectedCause)
-        assertTrue(result.drift.suspectedCause!!.contains("25 fps"))
+        assertTrue(result.drift.suspectedCause!!.contains("25") && result.drift.suspectedCause!!.contains("23.976"))
     }
 }

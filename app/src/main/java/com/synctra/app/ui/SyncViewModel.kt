@@ -23,8 +23,9 @@ import com.synctra.app.domain.model.SyncResult
 import com.synctra.app.domain.subtitle.SrtExporter
 import com.synctra.app.domain.subtitle.SubtitleCleaner
 import com.synctra.app.domain.subtitle.SubtitleParser
-import com.synctra.app.domain.sync.FftCrossCorrelator
+import com.synctra.app.domain.sync.FpsStretchMatcher
 import com.synctra.app.domain.sync.SyncAnalyzer
+import com.synctra.app.domain.sync.WindowAudioInput
 import com.synctra.app.domain.sync.WindowPlanner
 import com.synctra.app.ui.components.ExportSrtOptions
 import com.synctra.app.ui.i18n.AppLanguage
@@ -95,6 +96,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 cues = state.parsedSubtitle.allCues,
                 audioPosMs = preview.currentPositionMs,
                 appliedOffsetMs = state.effectiveOffsetMs,
+                result = state.result,
+                manualNudgeMs = state.manualNudgeMs,
             )
         } else {
             null
@@ -305,50 +308,34 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
 
-                    var windowSyncResults = extractedWindows.map { ext ->
-                        FftCrossCorrelator.correlateWindow(
-                            window = ext.window,
-                            audioEnvelope = ext.speechEnvelope,
-                            dialogueCues = cleaned.dialogueCues,
-                            maxLagMs = 60_000L,
-                        )
-                    }
-
-                    val maxConf = windowSyncResults.maxOfOrNull { it.confidence } ?: 0f
-                    if (maxConf < 0.35f) {
-                        internalState.update {
-                            it.copy(
-                                progress = SyncProgress(
-                                    stepTitle = strings.stepExpanding,
-                                    stepDetail = strings.stepExpandingDetail,
-                                    fraction = 0.92f,
-                                ),
-                            )
-                        }
-                        val wideResults = extractedWindows.map { ext ->
-                            FftCrossCorrelator.correlateWindow(
-                                window = ext.window,
-                                audioEnvelope = ext.speechEnvelope,
-                                dialogueCues = cleaned.dialogueCues,
-                                maxLagMs = 120_000L,
-                            )
-                        }
-                        val wideMaxConf = wideResults.maxOfOrNull { it.confidence } ?: 0f
-                        if (wideMaxConf > maxConf + 0.05f) {
-                            windowSyncResults = wideResults
-                        }
-                    }
+                    val matchResult = FpsStretchMatcher.matchBest(
+                        windows = extractedWindows.map { WindowAudioInput(it.window, it.speechEnvelope) },
+                        dialogueCues = cleaned.dialogueCues,
+                        onExpandingSearch = {
+                            internalState.update {
+                                it.copy(
+                                    progress = SyncProgress(
+                                        stepTitle = strings.stepExpanding,
+                                        stepDetail = strings.stepExpandingDetail,
+                                        fraction = 0.92f,
+                                    ),
+                                )
+                            }
+                        },
+                    )
 
                     val usedFfmpeg = extractedWindows.any { it.usedFfmpegDecoder }
                     val elapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1L)
 
                     SyncAnalyzer.aggregate(
-                        windowResults = windowSyncResults,
+                        windowResults = matchResult.windowResults,
                         cleanedSubtitles = cleaned,
                         audioCodecUsed = selectedTrack.technicalSummary,
                         audioTrackTitle = selectedTrack.displayTitle,
                         usedFfmpegDecoder = usedFfmpeg,
                         analysisDurationMs = elapsedMs,
+                        matchedFpsCandidate = matchResult.matchedFpsCandidate,
+                        matchedBaseOffsetMs = matchResult.baseOffsetMs,
                     )
                 }
 
@@ -471,7 +458,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
         val selectedWr = result.windowResults.getOrNull(windowIndex)
         val startMs = if (selectedWr != null) {
-            SyncAnalyzer.pickPreviewTimestamp(selectedWr, state.effectiveOffsetMs, cues)
+            SyncAnalyzer.pickPreviewTimestamp(
+                window = selectedWr,
+                offsetMs = state.effectiveOffsetMs,
+                cues = cues,
+                drift = result.drift,
+            )
         } else {
             result.recommendedPreviewAudioMs
         }
@@ -506,8 +498,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         cues: List<SubtitleCue>,
         audioPosMs: Long,
         appliedOffsetMs: Long,
+        result: SyncResult,
+        manualNudgeMs: Long,
     ): String? {
-        val targetSubMs = audioPosMs - appliedOffsetMs
+        val targetSubMs = if (result.drift.isLinearStretch && result.drift.severity != DriftSeverity.NONE) {
+            SyncAnalyzer.audioTimeToOriginalSubtitleTime(audioPosMs, result.drift, manualNudgeMs)
+        } else {
+            audioPosMs - appliedOffsetMs
+        }
         val active = cues.filter { targetSubMs in it.startMs..it.endMs }
         if (active.isEmpty()) return null
         return active.joinToString("\n") { it.cleanText }

@@ -88,8 +88,8 @@ fun ExportSrtSheet(
         mutableStateOf(flaggedAds.map { it.cue.index }.toSet())
     }
     var removeAllSdh by remember(flaggedSdh) { mutableStateOf(false) }
-    var applyDrift by remember(result.drift.severity) {
-        mutableStateOf(result.drift.severity == DriftSeverity.SEVERE)
+    var applyDrift by remember(result.drift.severity, result.drift.isLinearStretch) {
+        mutableStateOf(result.drift.isLinearStretch && result.drift.severity != DriftSeverity.NONE)
     }
 
     val totalRemovedCount = removedAdIndices.size + if (removeAllSdh) flaggedSdh.size else 0
@@ -194,8 +194,11 @@ fun ExportSrtSheet(
                                         modifier = Modifier.weight(1f),
                                         onClick = { applyDrift = false },
                                     )
+                                    val driftChipLabel = result.drift.detectedFpsLabel?.let { fps ->
+                                        "${strings.exportModeDrift} ($fps)"
+                                    } ?: strings.exportModeDrift
                                     ModeChip(
-                                        label = strings.exportModeDrift,
+                                        label = driftChipLabel,
                                         selected = applyDrift,
                                         modifier = Modifier.weight(1f),
                                         onClick = { applyDrift = true },

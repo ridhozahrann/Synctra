@@ -184,20 +184,26 @@ enum class DriftCauseKey {
 
 data class DriftAssessment(
     val severity: DriftSeverity,
-    /** Estimated drift in milliseconds per hour of playback. */
+    /** Estimated drift in milliseconds per hour of subtitle playback (`(speedRatio - 1) * 3_600_000`). */
     val driftMsPerHour: Double,
     /** Difference between maximum and minimum window offsets in milliseconds. */
     val spreadMs: Long,
     /** Human-readable suspected cause (Indonesian fallback). */
     val suspectedCause: String?,
     val causeKey: DriftCauseKey? = null,
-    /** Linear regression anchor timestamp in milliseconds (mean window center). */
+    /** Regression anchor timestamp in SUBTITLE time (ms). 0L when using exact cinema FPS ratio. */
     val anchorTimeMs: Long = 0L,
-    /** Linear regression offset at [anchorTimeMs] in milliseconds. */
+    /** Offset at [anchorTimeMs] in milliseconds (`newSubTime = origSubTime + anchorOffset + (origSubTime - anchorTime) * slope`). */
     val anchorOffsetMs: Long = 0L,
+    /** Speed multiplier (`newDuration / origDuration`), e.g. 25.0 / 23.976 = 1.042709. */
+    val speedRatio: Double = 1.0,
+    /** True when the drift fits a smooth linear FPS ratio rather than an abrupt scene cut or noisy outlier. */
+    val isLinearStretch: Boolean = false,
+    /** Optional short FPS conversion label, e.g. "25 → 23.976 fps". */
+    val detectedFpsLabel: String? = null,
 ) {
-    /** Dimensionless drift slope in ms per ms (driftMsPerHour / 3_600_000.0). */
-    val slopeMsPerMs: Double get() = driftMsPerHour / 3_600_000.0
+    /** Dimensionless drift slope in ms per subtitle ms (`speedRatio - 1.0`). */
+    val slopeMsPerMs: Double get() = if (speedRatio != 1.0) speedRatio - 1.0 else driftMsPerHour / 3_600_000.0
 }
 
 enum class ConfidenceLevel(val labelId: String) {

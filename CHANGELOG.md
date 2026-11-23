@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.0
+- Added `FpsStretchMatcher` to automatically detect and lock standard cinema FPS mismatches (`23.976 ↔ 25`, `24 ↔ 25`, `23.976 ↔ 24`) directly on extracted audio envelopes (< 30 ms, zero extra decoding), eliminating the ~3.8s intra-window smear and ±120s range limit on PAL/NTSC mismatches.
+- Fixed subtitle-time axis bug in drift regression (`SyncAnalyzer` now fits weighted least-squares directly on `t_sub = centerMs - offsetMs` so exported `.srt` timestamps match to within ~20–45 ms from start to finish).
+- Hardened drift detection against noisy low-confidence outlier windows and non-linear scene cuts (only pre-selects linear stretch when checkpoints genuinely follow a straight FPS line).
+- Enabled drift-aware live subtitle positioning in 10-second Audio Check preview when linear FPS drift is detected.
+
 ## v1.2.2
 - Fixed scrolling inside the Save `.srt` review sheet by replacing Material 3's draggable `ModalBottomSheet` with a bottom-anchored sheet dialog containing a single unified `LazyColumn` (eliminates gesture conflicts with drag-to-dismiss and gives the list full available height).
 

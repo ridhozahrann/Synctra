@@ -115,6 +115,8 @@ jobs:
           - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
           ### What's new in $TAG_NAME
-          - Fixed intermittent scroll lock in the Save \`.srt\` review sheet by replacing the nested-scroll \`ModalBottomSheet\` with a bottom-anchored dialog and single unified \`LazyColumn\`
-          - Includes all v1.2.1 improvements: full-rate VAD (zero 48 kHz aliasing), 5.1/7.1 Center-channel dialogue prioritization, exact PCM PTS anchoring, Concept C icon, recent history, ID/EN toggle, and compact ~2.9 MB \`arm64-v8a\` APK"
+          - Automatic cinema FPS mismatch detection (\`23.976 ↔ 25\`, \`24 ↔ 25\`, \`23.976 ↔ 24\`) via \`FpsStretchMatcher\` — eliminates intra-window smear and ±120s range limits on PAL/NTSC mismatches
+          - Fixed subtitle-time regression math in \`SyncAnalyzer\` & \`SrtExporter\` so FPS-stretched \`.srt\` exports stay accurate across the full movie
+          - Outlier-safe drift detection (low-confidence noisy windows no longer trigger false drift; abrupt scene cuts are separated from linear FPS stretches)
+          - Drift-aware live subtitle lookup in 10-second Audio Check preview"
           fi

@@ -3,11 +3,13 @@ package com.synctra.app.domain.subtitle
 import com.synctra.app.domain.model.DriftAssessment
 import com.synctra.app.domain.model.SubtitleCue
 import java.util.Locale
+import kotlin.math.roundToLong
 
 /**
  * Exports synchronized subtitles as clean UTF-8 `.srt`, supporting:
  * - Constant offset shift (`newTime = origTime + offsetMs`)
- * - Linear drift / FPS stretch correction (`newTime = origTime + anchorOffset + slope * (origTime - anchorTime)`)
+ * - Exact linear FPS stretch correction regressed on subtitle time:
+ *   `newTime = origTime + anchorOffset + (origTime - anchorTime) * (speedRatio - 1) + manualNudgeMs`
  * - Selective exclusion of user-confirmed ad/credit/SDH cues
  */
 object SrtExporter {
@@ -25,7 +27,9 @@ object SrtExporter {
         val sb = StringBuilder(allCues.size * 64)
         var outIndex = 1
 
-        val useDrift = applyDriftCorrection && drift != null && drift.anchorTimeMs > 0L
+        val useDrift = applyDriftCorrection &&
+            drift != null &&
+            (drift.speedRatio != 1.0 || drift.driftMsPerHour != 0.0)
 
         for (cue in allCues) {
             if (cue.index in excludedCueIndices) continue
@@ -45,7 +49,6 @@ object SrtExporter {
                 manualNudgeMs = manualNudgeMs,
             )
 
-            // Skip cues that ended completely before 00:00:00,000 after a negative shift
             if (rawEnd <= 0L) continue
 
             val clampedStart = newStart.coerceAtLeast(0L)
@@ -82,8 +85,12 @@ object SrtExporter {
         if (!useDrift || drift == null) {
             return origMs + constantOffsetMs
         }
+        // Works identically for both:
+        // - Exact cinema FPS match (anchorTimeMs = 0, anchorOffsetMs = baseOffset, slope = speedRatio - 1)
+        //   => origMs + baseOffset + origMs * (speedRatio - 1) = origMs * speedRatio + baseOffset
+        // - Weighted subtitle-time regression (anchorTimeMs = mean(t_sub), anchorOffsetMs = mean(offset))
         val deltaFromAnchor = origMs - drift.anchorTimeMs
-        val driftAtTime = drift.anchorOffsetMs + (deltaFromAnchor * drift.slopeMsPerMs).toLong()
+        val driftAtTime = drift.anchorOffsetMs + (deltaFromAnchor * drift.slopeMsPerMs).roundToLong()
         return origMs + driftAtTime + manualNudgeMs
     }
 
