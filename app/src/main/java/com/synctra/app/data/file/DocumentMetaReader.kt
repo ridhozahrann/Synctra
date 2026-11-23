@@ -56,6 +56,17 @@ object DocumentMetaReader {
         }
     }
 
+    @Throws(IOException::class)
+    fun writeUtf8Text(context: Context, uri: Uri, content: String) {
+        val stream = context.contentResolver.openOutputStream(uri, "wt")
+            ?: context.contentResolver.openOutputStream(uri)
+            ?: throw IOException("Cannot open destination file for writing.")
+        stream.use { output ->
+            output.write(content.toByteArray(Charsets.UTF_8))
+            output.flush()
+        }
+    }
+
     fun formatFileSize(bytes: Long): String {
         if (bytes < 0L) return ""
         return when {

@@ -4,6 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val enableAbiSplits = project.findProperty("abiSplits")?.toString()?.toBoolean() ?: false
+
 android {
     namespace = "com.synctra.app"
     compileSdk = 35
@@ -12,10 +14,21 @@ android {
         applicationId = "com.synctra.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    if (enableAbiSplits) {
+        splits {
+            abi {
+                isEnable = true
+                reset()
+                include("arm64-v8a", "armeabi-v7a")
+                isUniversalApk = true
+            }
+        }
     }
 
     buildTypes {
@@ -69,7 +82,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
 
-    // Media3 + Audio-only FFmpeg decoder extension (Option B: wide MKV/AC3/EAC3/DTS support)
+    // Media3 + Audio-only FFmpeg decoder extension (wide MKV/AC3/EAC3/DTS/TrueHD support)
     val media3Version = "1.8.0"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-extractor:$media3Version")

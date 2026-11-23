@@ -1,6 +1,8 @@
 package com.synctra.app.domain.subtitle
 
 import com.synctra.app.domain.model.CleanedSubtitleSet
+import com.synctra.app.domain.model.FlagReason
+import com.synctra.app.domain.model.FlaggedSubtitleCue
 import com.synctra.app.domain.model.ParsedSubtitleFile
 import com.synctra.app.domain.model.SubtitleCue
 
@@ -8,6 +10,9 @@ import com.synctra.app.domain.model.SubtitleCue
  * Filters out non-dialogue subtitle entries (translator credits, website ads/watermarks,
  * hearing-impaired SDH sound descriptions, music lyrics, and optional intro/outro edges)
  * so sync correlation relies purely on genuine spoken dialogue.
+ *
+ * Also retains the exact list of flagged cues with reasons so users can review and override
+ * which lines are kept or deleted when exporting a synced `.srt` file.
  */
 object SubtitleCleaner {
 
@@ -75,47 +80,33 @@ object SubtitleCleaner {
         "subscribe channel",
     )
 
-    // Whole cue is purely bracketed sound effect like [music playing], (sighs), (tense music)
     private val pureBracketSdhRegex = Regex("""^[\s\-–—]*(\[[^]]+]|(\([^)]+\))|\*[^*]+\*)[\s\-–—.,!?]*$""")
-
-    // Music symbols
     private val musicSymbolRegex = Regex("""[♪♫♬♩]""")
-
-    // Pure punctuation or numbers
     private val hasLetterRegex = Regex("""\p{L}""")
 
-    /**
-     * Cleans parsed subtitles for alignment.
-     *
-     * @param parsed Parsed subtitle file.
-     * @param mediaDurationMs Known media duration in ms (used to exclude extreme intro/outro edges on long films).
-     *                        Pass 0L if duration is unknown yet.
-     */
     fun clean(parsed: ParsedSubtitleFile, mediaDurationMs: Long = 0L): CleanedSubtitleSet {
-        var adCreditCount = 0
-        var sdhCount = 0
         var edgeCount = 0
+        val flaggedAds = mutableListOf<FlaggedSubtitleCue>()
+        val flaggedSdh = mutableListOf<FlaggedSubtitleCue>()
 
-        val applyEdgeTrim = mediaDurationMs >= 15L * 60L * 1000L // Only trim edges on videos >= 15 min
+        val applyEdgeTrim = mediaDurationMs >= 15L * 60L * 1000L
         val introGuardMs = 35_000L
         val outroGuardMs = if (applyEdgeTrim) mediaDurationMs - 60_000L else Long.MAX_VALUE
 
         val kept = mutableListOf<SubtitleCue>()
 
         for (cue in parsed.allCues) {
-            // 1. Check ads / credits / URLs
-            if (isAdOrCredit(cue)) {
-                adCreditCount++
+            val adReason = detectAdOrCreditReason(cue)
+            if (adReason != null) {
+                flaggedAds.add(FlaggedSubtitleCue(cue, adReason))
                 continue
             }
 
-            // 2. Check SDH / music / non-speech cues
             if (isNonSpeechSdh(cue.cleanText)) {
-                sdhCount++
+                flaggedSdh.add(FlaggedSubtitleCue(cue, FlagReason.SDH))
                 continue
             }
 
-            // 3. Check extreme intro/outro edges where studio logos / credits live
             if (applyEdgeTrim && (cue.endMs <= introGuardMs || cue.startMs >= outroGuardMs)) {
                 edgeCount++
                 continue
@@ -124,34 +115,34 @@ object SubtitleCleaner {
             kept.add(cue)
         }
 
-        // Safety fallback: if filtering was too aggressive (e.g. very short clip), fall back to non-ad cues
         val finalDialogue = if (kept.size >= 5) {
             kept
         } else {
             edgeCount = 0
-            parsed.allCues.filterNot { isAdOrCredit(it) || isNonSpeechSdh(it.cleanText) }
+            parsed.allCues.filterNot { detectAdOrCreditReason(it) != null || isNonSpeechSdh(it.cleanText) }
         }
 
         return CleanedSubtitleSet(
             format = parsed.format,
             allCues = parsed.allCues,
             dialogueCues = finalDialogue,
-            filteredAdOrCreditCount = adCreditCount,
-            filteredSdhCount = sdhCount,
+            filteredAdOrCreditCount = flaggedAds.size,
+            filteredSdhCount = flaggedSdh.size,
             filteredEdgeCount = edgeCount,
+            flaggedAdOrCreditCues = flaggedAds,
+            flaggedSdhCues = flaggedSdh,
         )
     }
 
-    internal fun isAdOrCredit(cue: SubtitleCue): Boolean {
+    internal fun detectAdOrCreditReason(cue: SubtitleCue): FlagReason? {
         val lower = cue.cleanText.lowercase()
-        if (urlPattern.containsMatchIn(lower)) return true
-        if (adOrCreditKeywords.any { lower.contains(it) }) return true
-
-        // Suspiciously long static banner (> 14 seconds) is almost always a credit/watermark/disclaimer
-        if (cue.durationMs > 14_000L && cue.cleanText.length < 120) return true
-
-        return false
+        if (urlPattern.containsMatchIn(lower)) return FlagReason.URL
+        if (adOrCreditKeywords.any { lower.contains(it) }) return FlagReason.CREDIT
+        if (cue.durationMs > 14_000L && cue.cleanText.length < 120) return FlagReason.LONG_BANNER
+        return null
     }
+
+    internal fun isAdOrCredit(cue: SubtitleCue): Boolean = detectAdOrCreditReason(cue) != null
 
     internal fun isNonSpeechSdh(cleanText: String): Boolean {
         val trimmed = cleanText.trim()
@@ -159,7 +150,6 @@ object SubtitleCleaner {
         if (!hasLetterRegex.containsMatchIn(trimmed)) return true
         if (musicSymbolRegex.containsMatchIn(trimmed)) return true
 
-        // Check if every line is a pure SDH bracketed description, e.g. "[gunshots]\n(screaming)"
         val lines = trimmed.lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isNotEmpty() && lines.all { pureBracketSdhRegex.matches(it) }) {
             return true

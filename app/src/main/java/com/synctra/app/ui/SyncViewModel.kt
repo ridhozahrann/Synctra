@@ -7,21 +7,28 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.synctra.app.data.file.DocumentMetaReader
 import com.synctra.app.data.file.SelectedFileInfo
+import com.synctra.app.data.history.SyncHistoryStore
 import com.synctra.app.data.media.AudioPreviewPlayer
 import com.synctra.app.data.media.AudioPreviewState
 import com.synctra.app.data.media.AudioSampleExtractor
 import com.synctra.app.domain.model.AudioTrackOption
 import com.synctra.app.domain.model.CleanedSubtitleSet
+import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.MediaTrackInfo
 import com.synctra.app.domain.model.ParsedSubtitleFile
 import com.synctra.app.domain.model.SubtitleCue
+import com.synctra.app.domain.model.SyncHistoryEntry
 import com.synctra.app.domain.model.SyncProgress
 import com.synctra.app.domain.model.SyncResult
+import com.synctra.app.domain.subtitle.SrtExporter
 import com.synctra.app.domain.subtitle.SubtitleCleaner
 import com.synctra.app.domain.subtitle.SubtitleParser
 import com.synctra.app.domain.sync.FftCrossCorrelator
 import com.synctra.app.domain.sync.SyncAnalyzer
 import com.synctra.app.domain.sync.WindowPlanner
+import com.synctra.app.ui.components.ExportSrtOptions
+import com.synctra.app.ui.i18n.AppLanguage
+import com.synctra.app.ui.i18n.AppStringsProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class SynctraUiState(
+    val language: AppLanguage = AppLanguage.ID,
     val videoFile: SelectedFileInfo? = null,
     val videoMeta: MediaTrackInfo? = null,
     val isProbingVideo: Boolean = false,
@@ -50,6 +58,7 @@ data class SynctraUiState(
     val errorMessage: String? = null,
     val previewState: AudioPreviewState = AudioPreviewState(),
     val activePreviewSubtitle: String? = null,
+    val recentHistory: List<SyncHistoryEntry> = emptyList(),
 ) {
     val canStartAnalysis: Boolean
         get() = videoFile != null && subtitleFile != null && !isAnalyzing && !isProbingVideo
@@ -67,8 +76,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
     private val audioExtractor = AudioSampleExtractor(appContext)
     private val previewPlayer = AudioPreviewPlayer(appContext, viewModelScope)
+    private val historyStore = SyncHistoryStore(appContext)
 
-    private val internalState = MutableStateFlow(SynctraUiState())
+    private val internalState = MutableStateFlow(
+        SynctraUiState(
+            language = AppLanguage.fromCode(historyStore.loadLanguageCode()),
+            recentHistory = historyStore.loadHistory(),
+        )
+    )
     private var analysisJob: Job? = null
 
     val uiState: StateFlow<SynctraUiState> = combine(
@@ -91,8 +106,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000L),
-        initialValue = SynctraUiState(),
+        initialValue = internalState.value,
     )
+
+    fun toggleLanguage() {
+        val next = if (internalState.value.language == AppLanguage.ID) AppLanguage.EN else AppLanguage.ID
+        historyStore.saveLanguageCode(next.code)
+        internalState.update { it.copy(language = next) }
+    }
 
     fun onVideoSelected(uri: Uri) {
         previewPlayer.stop()
@@ -206,6 +227,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         val videoFile = current.videoFile ?: return
         val subtitleFile = current.subtitleFile ?: return
         val chosenAudioIndex = current.selectedAudioTrackIndex
+        val strings = AppStringsProvider.get(current.language)
 
         previewPlayer.stop()
         analysisJob?.cancel()
@@ -219,8 +241,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     manualNudgeMs = 0L,
                     errorMessage = null,
                     progress = SyncProgress(
-                        stepTitle = "Menyiapkan analisis",
-                        stepDetail = "Membaca metadata audio & menyaring iklan subtitle",
+                        stepTitle = strings.stepPreparing,
+                        stepDetail = strings.stepPreparingDetail,
                         fraction = 0.08f,
                     ),
                 )
@@ -231,18 +253,18 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     val mediaInfo = current.videoMeta ?: audioExtractor.probeMedia(videoFile.uri)
                     val selectedTrack = mediaInfo.audioTracks.getOrNull(chosenAudioIndex)
                         ?: mediaInfo.primaryAudio
-                        ?: throw IllegalStateException("Jalur audio tidak tersedia.")
+                        ?: throw IllegalStateException("No audio track found.")
 
                     val parsed = current.parsedSubtitle ?: run {
                         val bytes = DocumentMetaReader.readAllBytes(appContext, subtitleFile.uri)
                         SubtitleParser.parse(bytes, subtitleFile.displayName)
                     }
                     if (parsed.allCues.size < 3) {
-                        throw IllegalStateException("File subtitle terlalu pendek atau tidak memiliki cukup dialog.")
+                        throw IllegalStateException("Subtitle file has too few dialogue lines.")
                     }
                     val cleaned = SubtitleCleaner.clean(parsed, mediaInfo.durationMs)
                     if (cleaned.dialogueCues.size < 3) {
-                        throw IllegalStateException("Tidak cukup dialog murni setelah filter iklan & kredit.")
+                        throw IllegalStateException("Not enough spoken dialogue after ad filtering.")
                     }
 
                     val windows = WindowPlanner.planWindows(
@@ -250,22 +272,23 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         dialogueCues = cleaned.dialogueCues,
                     )
                     if (windows.isEmpty()) {
-                        throw IllegalStateException("Durasi video tidak terbaca sehingga jendela sampel tidak dapat dibuat.")
+                        throw IllegalStateException("Could not determine video duration for sampling.")
                     }
 
                     val extractedWindows = audioExtractor.extractWindows(
                         uri = videoFile.uri,
                         windows = windows,
                         selectedAudioIndex = selectedTrack.audioIndex,
-                    ) { idx, total, win ->
+                    ) { idx, total, _ ->
                         val frac = 0.15f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.60f
+                        val winName = strings.windowShortLabel(idx, total)
                         internalState.update {
                             it.copy(
                                 videoMeta = mediaInfo,
                                 cleanedPreviewStats = cleaned,
                                 progress = SyncProgress(
-                                    stepTitle = "Sampel audio ${idx + 1} / $total",
-                                    stepDetail = "${selectedTrack.displayTitle} · ${win.label}",
+                                    stepTitle = strings.stepSampling(idx + 1, total),
+                                    stepDetail = "${selectedTrack.displayTitle} · $winName",
                                     fraction = frac,
                                 ),
                             )
@@ -275,8 +298,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     internalState.update {
                         it.copy(
                             progress = SyncProgress(
-                                stepTitle = "Mencocokkan pola dialog",
-                                stepDetail = "Korelasi suara vs subtitle & deteksi drift FPS",
+                                stepTitle = strings.stepCorrelating,
+                                stepDetail = strings.stepCorrelatingDetail,
                                 fraction = 0.85f,
                             ),
                         )
@@ -296,8 +319,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         internalState.update {
                             it.copy(
                                 progress = SyncProgress(
-                                    stepTitle = "Memperluas pencarian (±2 menit)",
-                                    stepDetail = "Mencari kemungkinan selisih besar hingga ±120 detik",
+                                    stepTitle = strings.stepExpanding,
+                                    stepDetail = strings.stepExpandingDetail,
                                     fraction = 0.92f,
                                 ),
                             )
@@ -334,12 +357,24 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     .maxByOrNull { it.value.confidence }
                     ?.index ?: 0
 
+                val updatedHistory = historyStore.addEntry(
+                    SyncHistoryEntry(
+                        videoName = videoFile.displayName,
+                        subtitleName = subtitleFile.displayName,
+                        audioTrackTitle = result.audioTrackTitle,
+                        offsetMs = result.offsetMs,
+                        hasDrift = result.drift.severity != DriftSeverity.NONE,
+                        checkedAtEpochMs = System.currentTimeMillis(),
+                    )
+                )
+
                 internalState.update {
                     it.copy(
                         isAnalyzing = false,
                         progress = null,
                         result = result,
                         selectedPreviewWindowIndex = bestWinIdx,
+                        recentHistory = updatedHistory,
                         errorMessage = null,
                     )
                 }
@@ -352,8 +387,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         isAnalyzing = false,
                         progress = null,
-                        errorMessage = e.localizedMessage
-                            ?: "Terjadi kendala saat menganalisis file. Pastikan file video tidak rusak.",
+                        errorMessage = e.localizedMessage ?: "Failed to analyze files.",
                     )
                 }
             }
@@ -364,6 +398,48 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         analysisJob?.cancel()
         analysisJob = null
         internalState.update { it.copy(isAnalyzing = false, progress = null) }
+    }
+
+    fun clearHistory() {
+        historyStore.clearHistory()
+        internalState.update { it.copy(recentHistory = emptyList()) }
+    }
+
+    fun suggestedExportFileName(): String =
+        SrtExporter.suggestedOutputFileName(internalState.value.subtitleFile?.displayName)
+
+    fun exportSyncedSrt(
+        destinationUri: Uri,
+        options: ExportSrtOptions,
+        onSaved: (keptCount: Int, removedCount: Int) -> Unit,
+    ) {
+        val state = internalState.value
+        val parsed = state.parsedSubtitle ?: return
+        val result = state.result ?: return
+
+        viewModelScope.launch {
+            try {
+                val (keptCount, removedCount) = withContext(Dispatchers.IO) {
+                    val srtContent = SrtExporter.exportSrt(
+                        allCues = parsed.allCues,
+                        offsetMs = state.effectiveOffsetMs,
+                        excludedCueIndices = options.excludedCueIndices,
+                        applyDriftCorrection = options.applyDriftCorrection,
+                        drift = result.drift,
+                        manualNudgeMs = state.manualNudgeMs,
+                    )
+                    DocumentMetaReader.writeUtf8Text(appContext, destinationUri, srtContent)
+                    val removed = options.excludedCueIndices.size
+                    val kept = (parsed.allCues.size - removed).coerceAtLeast(0)
+                    kept to removed
+                }
+                onSaved(keptCount, removedCount)
+            } catch (e: Exception) {
+                internalState.update {
+                    it.copy(errorMessage = e.localizedMessage ?: "Failed to save .srt file.")
+                }
+            }
+        }
     }
 
     fun onSelectPreviewWindow(index: Int) {

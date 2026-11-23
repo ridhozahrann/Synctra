@@ -30,17 +30,20 @@ import androidx.compose.ui.unit.sp
 import com.synctra.app.domain.model.ConfidenceLevel
 import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.SyncResult
+import com.synctra.app.ui.i18n.AppStrings
 import com.synctra.app.ui.theme.SynctraColors
 import java.util.Locale
 import kotlin.math.abs
 
 @Composable
 fun ResultCard(
+    strings: AppStrings,
     result: SyncResult,
     effectiveOffsetMs: Long,
     manualNudgeMs: Long,
     onCopySeconds: (String) -> Unit,
     onCopyMillis: (String) -> Unit,
+    onOpenSaveSrt: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isSynced = abs(effectiveOffsetMs) <= 150L
@@ -60,20 +63,19 @@ fun ResultCard(
         border = BorderStroke(1.dp, SynctraColors.Hairline),
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
-            // Top metadata row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Offset subtitle",
+                    text = strings.offsetTitle,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = SynctraColors.InkMuted,
                 )
                 Text(
-                    text = "${(result.confidence * 100).toInt()}% · ${result.confidenceLevel.labelId}",
+                    text = "${(result.confidence * 100).toInt()}% · ${strings.confidenceLabel(result.confidenceLevel)}",
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace,
                     color = confidenceColor,
@@ -82,10 +84,9 @@ fun ResultCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Hero numeric readout
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
-                    text = if (isSynced) "Sinkron" else "${formattedSec}s",
+                    text = if (isSynced) strings.syncedStatus else "${formattedSec}s",
                     fontSize = 40.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = if (isSynced) FontFamily.Default else FontFamily.Monospace,
@@ -107,7 +108,10 @@ fun ResultCard(
             if (manualNudgeMs != 0L) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Manual ${formatSignedSeconds(manualNudgeMs)}s (awal ${formatSignedSeconds(result.offsetMs)}s)",
+                    text = strings.manualNudgeInfo(
+                        formatSignedSeconds(manualNudgeMs),
+                        formatSignedSeconds(result.offsetMs),
+                    ),
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace,
                     color = SynctraColors.Accent,
@@ -116,18 +120,8 @@ fun ResultCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Direct player instruction
-            val guidance = when {
-                isSynced -> "Sudah cocok dengan audio (selisih $formattedMs ms)."
-                effectiveOffsetMs > 0 ->
-                    "Subtitle terlalu cepat ${String.format(Locale.US, "%.2f", effectiveOffsetMs / 1000.0)} detik. " +
-                        "Atur delay ${formattedSec}s di VLC / MX Player / Nova."
-                else ->
-                    "Subtitle terlambat ${String.format(Locale.US, "%.2f", abs(effectiveOffsetMs) / 1000.0)} detik. " +
-                        "Atur delay ${formattedSec}s di VLC / MX Player / Nova."
-            }
             Text(
-                text = guidance,
+                text = strings.formatGuidance(effectiveOffsetMs, formattedSec, formattedMs),
                 fontSize = 14.sp,
                 lineHeight = 20.sp,
                 color = SynctraColors.InkSecondary,
@@ -135,7 +129,7 @@ fun ResultCard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Action buttons
+            // Primary action bar: Copy seconds + Copy ms + Save .srt
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -152,7 +146,7 @@ fun ResultCard(
                     ),
                 ) {
                     Text(
-                        text = "Salin ${formattedSec}s",
+                        text = strings.copySecAction(formattedSec),
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
@@ -166,7 +160,7 @@ fun ResultCard(
                     border = BorderStroke(1.dp, SynctraColors.Hairline),
                 ) {
                     Text(
-                        text = "Salin ms",
+                        text = strings.copyMsAction,
                         color = SynctraColors.InkPrimary,
                         fontWeight = FontWeight.Medium,
                         fontSize = 13.sp,
@@ -174,7 +168,36 @@ fun ResultCard(
                 }
             }
 
-            // Drift warning callout (left-accent bar, clean and restrained)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = onOpenSaveSrt,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (result.drift.severity == DriftSeverity.SEVERE) {
+                        SynctraColors.Accent
+                    } else {
+                        SynctraColors.Hairline
+                    },
+                ),
+            ) {
+                Text(
+                    text = strings.saveSrtAction,
+                    color = if (result.drift.severity == DriftSeverity.SEVERE) {
+                        SynctraColors.Accent
+                    } else {
+                        SynctraColors.InkPrimary
+                    },
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.sp,
+                )
+            }
+
+            // Drift warning callout
             if (result.drift.severity != DriftSeverity.NONE) {
                 Spacer(modifier = Modifier.height(14.dp))
                 val isSevere = result.drift.severity == DriftSeverity.SEVERE
@@ -195,12 +218,12 @@ fun ResultCard(
                     )
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                         Text(
-                            text = if (isSevere) "Drift / beda FPS terdeteksi" else "Ada sedikit pergeseran antar bagian",
+                            text = if (isSevere) strings.driftSevereTitle else strings.driftMildTitle,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = barColor,
                         )
-                        result.drift.suspectedCause?.let { cause ->
+                        strings.driftCauseLabel(result.drift.causeKey, result.drift.suspectedCause)?.let { cause ->
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = cause,
@@ -210,7 +233,9 @@ fun ResultCard(
                         }
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Selisih antar titik sampel ${String.format(Locale.US, "%.2f", result.drift.spreadMs / 1000.0)}s.",
+                            text = strings.driftSpreadInfo(
+                                String.format(Locale.US, "%.2f", result.drift.spreadMs / 1000.0)
+                            ),
                             fontSize = 12.sp,
                             color = SynctraColors.InkSecondary,
                         )
@@ -275,13 +300,12 @@ fun ResultCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Quiet technical footer
             val footerParts = buildList {
                 if (result.audioTrackTitle.isNotBlank()) add(result.audioTrackTitle)
                 add(result.audioCodecUsed)
                 add(if (result.usedFfmpegDecoder) "FFmpeg" else "MediaCodec")
                 add("${String.format(Locale.US, "%.1f", result.analysisDurationMs / 1000.0)}s")
-                if (result.filteredJunkCues > 0) add("${result.filteredJunkCues} iklan/SDH difilter")
+                if (result.filteredJunkCues > 0) add(strings.filteredMeta(result.filteredJunkCues))
             }
             Text(
                 text = footerParts.joinToString(" · "),

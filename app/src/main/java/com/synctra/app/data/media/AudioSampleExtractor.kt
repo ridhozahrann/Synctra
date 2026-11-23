@@ -433,6 +433,7 @@ class AudioSampleExtractor(private val context: Context) {
         private val sampleRate: Int,
     ) : AudioPacketDecoder {
         override val isFfmpeg: Boolean = false
+        private var pcmScratch = ShortArray(8192)
         override fun flush() = Unit
         override fun decode(
             data: ByteArray,
@@ -442,9 +443,9 @@ class AudioSampleExtractor(private val context: Context) {
         ) {
             val count = size / 2
             if (count <= 0) return
-            val shorts = ShortArray(count)
-            ByteBuffer.wrap(data, 0, size).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-            onPcm16(shorts, count, channels, sampleRate, ptsUs)
+            if (pcmScratch.size < count) pcmScratch = ShortArray(count)
+            ByteBuffer.wrap(data, 0, size).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmScratch, 0, count)
+            onPcm16(pcmScratch, count, channels, sampleRate, ptsUs)
         }
 
         override fun close() = Unit
@@ -456,6 +457,7 @@ class AudioSampleExtractor(private val context: Context) {
         private var outChannels = format.channelCount.coerceAtLeast(1)
         private var outSampleRate = format.sampleRate.coerceAtLeast(8000)
         private val bufferInfo = MediaCodec.BufferInfo()
+        private var pcmScratch = ShortArray(8192)
 
         init {
             val mime = format.sampleMimeType
@@ -525,9 +527,9 @@ class AudioSampleExtractor(private val context: Context) {
                             outBuf.position(bufferInfo.offset)
                             outBuf.limit(bufferInfo.offset + bufferInfo.size)
                             val count = bufferInfo.size / 2
-                            val shorts = ShortArray(count)
-                            outBuf.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-                            onPcm16(shorts, count, outChannels, outSampleRate, bufferInfo.presentationTimeUs)
+                            if (pcmScratch.size < count) pcmScratch = ShortArray(count)
+                            outBuf.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmScratch, 0, count)
+                            onPcm16(pcmScratch, count, outChannels, outSampleRate, bufferInfo.presentationTimeUs)
                         }
                         codec.releaseOutputBuffer(outIdx, false)
                     }

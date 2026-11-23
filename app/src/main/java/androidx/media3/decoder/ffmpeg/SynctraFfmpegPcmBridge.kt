@@ -95,6 +95,8 @@ class SynctraFfmpegPcmBridge private constructor(
         }
     }
 
+    private var pcmScratch = ShortArray(8192)
+
     private fun emitOutputBuffer(
         out: androidx.media3.decoder.SimpleDecoderOutputBuffer,
         onPcm16: (samples: ShortArray, sampleCount: Int, channels: Int, sampleRate: Int, ptsUs: Long) -> Unit,
@@ -105,9 +107,11 @@ class SynctraFfmpegPcmBridge private constructor(
         if (remaining < 2) return
 
         val shortCount = remaining / 2
-        val shorts = ShortArray(shortCount)
-        byteBuf.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-        onPcm16(shorts, shortCount, channelCount, sampleRate, out.timeUs)
+        if (pcmScratch.size < shortCount) {
+            pcmScratch = ShortArray(shortCount)
+        }
+        byteBuf.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmScratch, 0, shortCount)
+        onPcm16(pcmScratch, shortCount, channelCount, sampleRate, out.timeUs)
     }
 
     override fun close() {

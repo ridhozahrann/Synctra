@@ -1,16 +1,17 @@
 # Synctra
 
-Offline Android app that calculates the exact timing offset (in seconds and milliseconds) between a movie file and an external subtitle file.
+Offline Android app that calculates the exact timing offset (in seconds and milliseconds) between a movie file and an external subtitle file, with optional synced `.srt` export.
 
 Instead of guessing subtitle delay values by trial and error inside VLC, MX Player, or Nova Video Player, Synctra samples the movie's audio track, matches spoken dialogue against the subtitle timeline, and tells you the exact delay to enter.
 
 ## How it works
 
-1. **Subtitle cleanup:** Parses `.srt`, `.ass`/`.ssa`, and `.vtt` files (UTF-8/BOM, UTF-16, Windows-1252) and strips out website ads, translator credits, URLs, SDH cues (`[music]`, `♪`), and intro/outro edges before alignment.
-2. **Audio-only sampling:** Skips video decoding completely. If a container has multiple audio tracks (e.g. English and Hindi), you can choose which track to analyze and preview. For full-length movies, it seeks to three dialogue-dense 90-second segments in the interior (~20%, ~50%, ~75% of duration), avoiding intro logos and end credits.
-3. **Speech detection & correlation:** Runs a streaming voice-band detector (300–3400 Hz Butterworth bandpass + syllabic modulation, 20 ms frames) and a two-stage Radix-2 FFT normalized cross-correlation (±60 s, auto-expanding to ±120 s) with parabolic peak refinement.
+1. **Subtitle cleanup:** Parses `.srt`, `.ass`/`.ssa`, and `.vtt` files (UTF-8/BOM, UTF-16, Windows-1252) and flags website ads, translator credits, URLs, SDH cues (`[music]`, `♪`), and intro/outro edges before alignment.
+2. **Audio-only sampling:** Skips video decoding completely. If a container has multiple audio tracks (e.g. English and Hindi), you can choose which track to analyze and preview. For full-length movies, it seeks to three dialogue-dense 75-second segments in the interior (~20%, ~50%, ~75% of duration), avoiding intro logos and end credits.
+3. **Speech detection & correlation:** Decimates high-rate audio (48 kHz → 16 kHz) into a streaming voice-band detector (300–3400 Hz Butterworth bandpass + syllabic modulation, 20 ms frames) and runs a two-stage Radix-2 FFT normalized cross-correlation (±60 s, auto-expanding to ±120 s) with parabolic peak refinement.
 4. **Drift check:** Compares offsets across the sampled checkpoints to flag progressive drift (e.g. 23.976 fps vs 25 fps or mismatched cuts).
-5. **10-second audio preview:** Plays a short audio-only clip synced with live subtitle text and `±0.1s` / `±0.5s` nudge buttons so you can verify the result by ear.
+5. **10-second audio preview:** Plays a short audio-only clip from the selected audio track synced with live subtitle text and `±0.1s` / `±0.5s` nudge buttons.
+6. **Save `.srt` with ad review:** Optionally saves a shifted (or drift-corrected) `.srt` file via Android SAF. Every flagged ad/credit line is listed with timestamp and reason so you can uncheck any false positive before saving.
 
 ## Offset sign convention
 
@@ -25,10 +26,13 @@ Instead of guessing subtitle delay values by trial and error inside VLC, MX Play
 - **Audio codecs:** AAC, MP3, Opus, Vorbis, FLAC, PCM via native `MediaCodec`, with automatic fallback to `org.jellyfin.media3:media3-ffmpeg-decoder` for AC-3, E-AC-3, DTS, TrueHD, and ALAC
 - **Subtitles:** `.srt`, `.ass`, `.ssa`, `.vtt`
 - **Minimum Android version:** Android 7.0 (API 24), no storage permissions required (uses Android's document picker)
+- **Languages:** English and Indonesian (defaults to system locale, switchable in-app)
 
 ## Download
 
-Grab the latest signed universal APK (~7 MB) from [Releases](https://github.com/ridhozahrann/Synctra/releases).
+Grab the latest signed APK from [Releases](https://github.com/ridhozahrann/Synctra/releases):
+- `Synctra-vX.Y.Z-arm64-v8a.apk` (~3 MB, recommended for modern 64-bit Android devices)
+- `Synctra-vX.Y.Z-universal.apk` (~7 MB, all ABIs)
 
 ## Building from source
 
@@ -41,9 +45,20 @@ Requires JDK 21 and Android SDK (API 35).
 # Build debug APK
 ./gradlew :app:assembleDebug
 
-# Build minified release APK
+# Build minified universal release APK
 ./gradlew :app:assembleRelease
+
+# Build per-ABI splits (arm64-v8a, armeabi-v7a) + universal
+./gradlew :app:assembleRelease -PabiSplits=true
 ```
+
+### Persistent release signing in GitHub Actions
+
+To allow in-place updates between GitHub Releases without uninstalling first, add these repository secrets (`Settings → Secrets and variables → Actions`):
+- `SIGNING_KEYSTORE_BASE64` — base64-encoded `.jks` keystore
+- `KEYSTORE_PASSWORD`
+- `KEY_ALIAS`
+- `KEY_PASSWORD`
 
 ## Tech stack
 

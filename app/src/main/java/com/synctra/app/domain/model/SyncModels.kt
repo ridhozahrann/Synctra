@@ -28,6 +28,18 @@ data class ParsedSubtitleFile(
     val encodingName: String,
 )
 
+enum class FlagReason {
+    URL,
+    CREDIT,
+    LONG_BANNER,
+    SDH,
+}
+
+data class FlaggedSubtitleCue(
+    val cue: SubtitleCue,
+    val reason: FlagReason,
+)
+
 data class CleanedSubtitleSet(
     val format: SubtitleFormat,
     val allCues: List<SubtitleCue>,
@@ -35,6 +47,8 @@ data class CleanedSubtitleSet(
     val filteredAdOrCreditCount: Int,
     val filteredSdhCount: Int,
     val filteredEdgeCount: Int,
+    val flaggedAdOrCreditCues: List<FlaggedSubtitleCue> = emptyList(),
+    val flaggedSdhCues: List<FlaggedSubtitleCue> = emptyList(),
 ) {
     val totalFilteredCount: Int
         get() = filteredAdOrCreditCount + filteredSdhCount + filteredEdgeCount
@@ -148,15 +162,10 @@ data class WindowSyncResult(
     /**
      * Delay in milliseconds to apply to subtitles so they match audio:
      * newSubtitleTime = originalSubtitleTime + offsetMs
-     * Positive => subtitle currently appears TOO EARLY (delay it by +offsetMs).
-     * Negative => subtitle currently appears TOO LATE (advance it by offsetMs).
      */
     val offsetMs: Long,
-    /** Normalized correlation confidence in [0.0, 1.0]. */
     val confidence: Float,
-    /** Peak prominence above runner-up/noise floor (higher is sharper match). */
     val peakProminence: Float,
-    /** Ratio of frames detected as speech inside this audio window. */
     val speechRatio: Float,
 )
 
@@ -166,15 +175,30 @@ enum class DriftSeverity {
     SEVERE,
 }
 
+enum class DriftCauseKey {
+    FPS_23976_VS_25,
+    FPS_23976_VS_24,
+    DIFFERENT_CUT,
+    GRADUAL_SHIFT,
+}
+
 data class DriftAssessment(
     val severity: DriftSeverity,
     /** Estimated drift in milliseconds per hour of playback. */
     val driftMsPerHour: Double,
     /** Difference between maximum and minimum window offsets in milliseconds. */
     val spreadMs: Long,
-    /** Human-readable suspected cause (e.g., "23.976 fps vs 25 fps"). */
+    /** Human-readable suspected cause (Indonesian fallback). */
     val suspectedCause: String?,
-)
+    val causeKey: DriftCauseKey? = null,
+    /** Linear regression anchor timestamp in milliseconds (mean window center). */
+    val anchorTimeMs: Long = 0L,
+    /** Linear regression offset at [anchorTimeMs] in milliseconds. */
+    val anchorOffsetMs: Long = 0L,
+) {
+    /** Dimensionless drift slope in ms per ms (driftMsPerHour / 3_600_000.0). */
+    val slopeMsPerMs: Double get() = driftMsPerHour / 3_600_000.0
+}
 
 enum class ConfidenceLevel(val labelId: String) {
     HIGH("Akurasi Tinggi"),
@@ -183,9 +207,7 @@ enum class ConfidenceLevel(val labelId: String) {
 }
 
 data class SyncResult(
-    /** Consensus delay in milliseconds (newSubTime = originalSubTime + offsetMs). */
     val offsetMs: Long,
-    /** Overall confidence in [0.0, 1.0]. */
     val confidence: Float,
     val confidenceLevel: ConfidenceLevel,
     val windowResults: List<WindowSyncResult>,
@@ -196,7 +218,6 @@ data class SyncResult(
     val analysisDurationMs: Long,
     val totalDialogueCues: Int,
     val filteredJunkCues: Int,
-    /** Suggested dialogue-rich timestamp (audio timeline) for the 10-second Test Dengar preview. */
     val recommendedPreviewAudioMs: Long,
 ) {
     val offsetSeconds: Double get() = offsetMs / 1000.0
@@ -216,4 +237,13 @@ data class SyncProgress(
     val stepTitle: String,
     val stepDetail: String,
     val fraction: Float,
+)
+
+data class SyncHistoryEntry(
+    val videoName: String,
+    val subtitleName: String,
+    val audioTrackTitle: String,
+    val offsetMs: Long,
+    val hasDrift: Boolean,
+    val checkedAtEpochMs: Long,
 )

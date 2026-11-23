@@ -34,10 +34,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.synctra.app.data.media.AudioPreviewState
 import com.synctra.app.domain.model.WindowSyncResult
+import com.synctra.app.ui.i18n.AppStrings
 import com.synctra.app.ui.theme.SynctraColors
 
 @Composable
 fun AudioPreviewCard(
+    strings: AppStrings,
     previewState: AudioPreviewState,
     activeSubtitleText: String?,
     windows: List<WindowSyncResult>,
@@ -65,7 +67,6 @@ fun AudioPreviewCard(
         border = BorderStroke(1.dp, SynctraColors.Hairline),
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
-            // Header row + checkpoint selector
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -73,14 +74,14 @@ fun AudioPreviewCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Test dengar",
+                        text = strings.testListenTitle,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = SynctraColors.InkPrimary,
                     )
                     if (!audioTrackTitle.isNullOrBlank()) {
                         Text(
-                            text = "Audio: $audioTrackTitle · 10 detik",
+                            text = strings.testListenAudioMeta(audioTrackTitle),
                             fontSize = 12.sp,
                             color = SynctraColors.InkMuted,
                         )
@@ -89,7 +90,7 @@ fun AudioPreviewCard(
 
                 if (windows.size > 1) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        windows.forEachIndexed { idx, wr ->
+                        windows.forEachIndexed { idx, _ ->
                             val selected = idx == selectedWindowIndex
                             Surface(
                                 onClick = { onSelectWindow(idx) },
@@ -101,7 +102,7 @@ fun AudioPreviewCard(
                                 ),
                             ) {
                                 Text(
-                                    text = wr.window.label.substringBefore(" "),
+                                    text = strings.windowShortLabel(idx, windows.size),
                                     fontSize = 11.sp,
                                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                                     color = if (selected) SynctraColors.InkPrimary else SynctraColors.InkMuted,
@@ -115,7 +116,6 @@ fun AudioPreviewCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Recessed cinema subtitle stage
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -132,10 +132,10 @@ fun AudioPreviewCard(
                 ) {
                     Text(
                         text = when {
-                            previewState.isBuffering -> "Memuat audio..."
+                            previewState.isBuffering -> strings.loadingAudio
                             !activeSubtitleText.isNullOrBlank() -> activeSubtitleText
                             previewState.isPlaying -> "—"
-                            else -> "Tekan play untuk cocokkan suara & teks"
+                            else -> strings.pressPlayHint
                         },
                         fontSize = if (!activeSubtitleText.isNullOrBlank()) 16.sp else 13.sp,
                         fontWeight = if (!activeSubtitleText.isNullOrBlank()) FontWeight.Medium else FontWeight.Normal,
@@ -152,7 +152,6 @@ fun AudioPreviewCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Compact studio transport row: Play circle + hairline scrubber + timecode
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -167,7 +166,7 @@ fun AudioPreviewCard(
                 ) {
                     Icon(
                         imageVector = if (previewState.isPlaying) Icons.Filled.Close else Icons.Filled.PlayArrow,
-                        contentDescription = if (previewState.isPlaying) "Hentikan" else "Putar",
+                        contentDescription = if (previewState.isPlaying) strings.stopContentDesc else strings.playContentDesc,
                         tint = if (previewState.isPlaying) SynctraColors.InkPrimary else SynctraColors.ActionInk,
                         modifier = Modifier.size(20.dp),
                     )
@@ -216,7 +215,6 @@ fun AudioPreviewCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Segmented monospace fine-tune stepper bar
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(10.dp),
@@ -232,7 +230,7 @@ fun AudioPreviewCard(
                     StepperCell("-0.1", Modifier.weight(1f)) { onNudgeOffset(-100L) }
                     StepperDivider()
                     StepperCell(
-                        label = if (manualNudgeMs == 0L) "0.0" else "Reset",
+                        label = if (manualNudgeMs == 0L) "0.0" else strings.resetLabel,
                         modifier = Modifier.weight(1f),
                         accent = manualNudgeMs != 0L,
                         enabled = manualNudgeMs != 0L,

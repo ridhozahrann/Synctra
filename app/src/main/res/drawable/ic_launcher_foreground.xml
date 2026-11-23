@@ -4,12 +4,25 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Minimalist audio waveform bars in warm ivory -->
+
+    <!-- Concept C: Minimalist closed-caption frame (safe zone 24..84 inside 108dp) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F5F5F7"
+        android:strokeWidth="3.6"
+        android:strokeLineJoin="round"
+        android:pathData="M31,34h46a3.5,3.5 0,0 1,3.5 3.5v33a3.5,3.5 0,0 1,-3.5 3.5h-46a3.5,3.5 0,0 1,-3.5 -3.5v-33a3.5,3.5 0,0 1,3.5 -3.5z" />
+
+    <!-- Two crisp horizontal subtitle bars -->
     <path
         android:fillColor="#F5F5F7"
-        android:pathData="M31,48h5v14h-5zM42,37h5v36h-5zM53,28h5v50h-5zM64,40h5v28h-5zM75,49h5v12h-5z" />
-    <!-- Studio amber timecode alignment tick -->
+        android:pathData="M36.5,46h35a1.8,1.8 0,0 1,0 3.6h-35a1.8,1.8 0,0 1,0 -3.6z" />
+    <path
+        android:fillColor="#F5F5F7"
+        android:pathData="M36.5,58.4h35a1.8,1.8 0,0 1,0 3.6h-35a1.8,1.8 0,0 1,0 -3.6z" />
+
+    <!-- Vertical studio-amber sync playhead bisecting the frame -->
     <path
         android:fillColor="#F59E0B"
-        android:pathData="M31,82h49v3.5h-49z" />
+        android:pathData="M52.3,26.5a1.7,1.7 0,0 1,3.4 0v55a1.7,1.7 0,0 1,-3.4 0z" />
 </vector>

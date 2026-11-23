@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.synctra.app.domain.model.AudioTrackOption
+import com.synctra.app.ui.i18n.AppStrings
 import com.synctra.app.ui.theme.SynctraColors
 
 /**
@@ -40,6 +41,7 @@ import com.synctra.app.ui.theme.SynctraColors
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MediaInputSheet(
+    strings: AppStrings,
     videoName: String?,
     videoMeta: String?,
     isProbingVideo: Boolean,
@@ -60,17 +62,17 @@ fun MediaInputSheet(
         border = BorderStroke(1.dp, SynctraColors.Hairline),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Row 1: Video file
             InputRow(
-                label = "Film",
+                label = strings.filmLabel,
                 value = videoName,
-                placeholder = "Pilih video (.mp4, .mkv, .avi, .webm)",
-                meta = if (isProbingVideo) "Membaca info audio..." else videoMeta,
+                placeholder = strings.filmPlaceholder,
+                meta = if (isProbingVideo) strings.probingAudio else videoMeta,
+                pickLabel = strings.pickAction,
+                changeLabel = strings.changeAction,
                 enabled = enabled,
                 onClick = onPickVideo,
             )
 
-            // Row 2 (conditional): Audio Track picker when container has 2+ audio tracks
             AnimatedVisibility(visible = audioTracks.size > 1) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     HorizontalDivider(
@@ -88,13 +90,13 @@ fun MediaInputSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = "Jalur audio",
+                                text = strings.audioTrackLabel,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = SynctraColors.InkMuted,
                             )
                             Text(
-                                text = "${audioTracks.size} tersedia",
+                                text = strings.availableCount(audioTracks.size),
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = SynctraColors.InkMuted,
@@ -108,10 +110,9 @@ fun MediaInputSheet(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             audioTracks.forEach { track ->
-                                val selected = track.audioIndex == selectedAudioIndex
                                 AudioTrackChip(
                                     track = track,
-                                    selected = selected,
+                                    selected = track.audioIndex == selectedAudioIndex,
                                     enabled = enabled,
                                     onClick = { onSelectAudioTrack(track.audioIndex) },
                                 )
@@ -126,12 +127,13 @@ fun MediaInputSheet(
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
 
-            // Row 3: Subtitle file
             InputRow(
-                label = "Subtitle",
+                label = strings.subtitleLabel,
                 value = subtitleName,
-                placeholder = "Pilih subtitle (.srt, .ass, .vtt)",
+                placeholder = strings.subtitlePlaceholder,
                 meta = subtitleMeta,
+                pickLabel = strings.pickAction,
+                changeLabel = strings.changeAction,
                 enabled = enabled,
                 onClick = onPickSubtitle,
             )
@@ -145,6 +147,8 @@ private fun InputRow(
     value: String?,
     placeholder: String,
     meta: String?,
+    pickLabel: String,
+    changeLabel: String,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
@@ -197,7 +201,7 @@ private fun InputRow(
         Spacer(modifier = Modifier.width(12.dp))
 
         Text(
-            text = if (selected) "Ganti" else "Pilih",
+            text = if (selected) changeLabel else pickLabel,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             color = if (enabled) SynctraColors.InkPrimary else SynctraColors.InkMuted,

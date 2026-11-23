@@ -33,8 +33,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -47,9 +49,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.synctra.app.data.file.DocumentMetaReader
 import com.synctra.app.ui.components.AudioPreviewCard
+import com.synctra.app.ui.components.ExportSrtOptions
+import com.synctra.app.ui.components.ExportSrtSheet
 import com.synctra.app.ui.components.MediaInputSheet
+import com.synctra.app.ui.components.RecentHistoryCard
 import com.synctra.app.ui.components.ResultCard
 import com.synctra.app.ui.components.formatClock
+import com.synctra.app.ui.i18n.AppLanguage
+import com.synctra.app.ui.i18n.AppStringsProvider
 import com.synctra.app.ui.theme.SynctraColors
 import kotlinx.coroutines.launch
 
@@ -58,9 +65,13 @@ fun SynctraScreen(
     viewModel: SyncViewModel = viewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val strings = remember(state.language) { AppStringsProvider.get(state.language) }
     val snackbarHostState = remember { SnackbarHostState() }
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+
+    var showExportSheet by remember { mutableStateOf(false) }
+    var pendingExportOptions by remember { mutableStateOf<ExportSrtOptions?>(null) }
 
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -74,10 +85,24 @@ fun SynctraScreen(
         if (uri != null) viewModel.onSubtitleSelected(uri)
     }
 
+    val createSrtLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/x-subrip"),
+    ) { uri ->
+        val options = pendingExportOptions
+        pendingExportOptions = null
+        if (uri != null && options != null) {
+            viewModel.exportSyncedSrt(uri, options) { kept, removed ->
+                scope.launch {
+                    snackbarHostState.showSnackbar(strings.savedSrtToast(kept, removed))
+                }
+            }
+        }
+    }
+
     fun copyWithToast(value: String, label: String) {
         clipboard.setText(AnnotatedString(value))
         scope.launch {
-            snackbarHostState.showSnackbar("Disalin: $label")
+            snackbarHostState.showSnackbar(strings.copiedToast(label))
         }
     }
 
@@ -98,13 +123,13 @@ fun SynctraScreen(
                 .padding(horizontal = 20.dp, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // Minimal, confident header
+            // Minimal header + subtle ID/EN toggle
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Synctra",
                         fontSize = 26.sp,
@@ -114,14 +139,48 @@ fun SynctraScreen(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Cek selisih detik subtitle & film",
+                        text = strings.subtitleTagline,
                         fontSize = 13.sp,
                         color = SynctraColors.InkMuted,
                     )
                 }
+
+                Surface(
+                    onClick = { viewModel.toggleLanguage() },
+                    shape = RoundedCornerShape(8.dp),
+                    color = SynctraColors.Surface,
+                    border = BorderStroke(1.dp, SynctraColors.Hairline),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "ID",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (state.language == AppLanguage.ID) FontWeight.Bold else FontWeight.Normal,
+                            color = if (state.language == AppLanguage.ID) SynctraColors.Accent else SynctraColors.InkMuted,
+                        )
+                        Text(
+                            text = "/",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = SynctraColors.Hairline,
+                        )
+                        Text(
+                            text = "EN",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (state.language == AppLanguage.EN) FontWeight.Bold else FontWeight.Normal,
+                            color = if (state.language == AppLanguage.EN) SynctraColors.Accent else SynctraColors.InkMuted,
+                        )
+                    }
+                }
             }
 
-            // Unified Input Panel (Video + Multi-Audio Track Picker + Subtitle)
+            // Unified Input Panel
             val videoMetaLine = buildList {
                 state.videoFile?.sizeBytes?.takeIf { it > 0 }?.let {
                     add(DocumentMetaReader.formatFileSize(it))
@@ -139,14 +198,15 @@ fun SynctraScreen(
             val subtitleMetaLine = state.cleanedPreviewStats?.let { stats ->
                 buildList {
                     add(stats.format.displayName)
-                    add("${stats.dialogueCues.size} dialog")
+                    add(strings.dialogsMeta(stats.dialogueCues.size))
                     if (stats.totalFilteredCount > 0) {
-                        add("${stats.totalFilteredCount} iklan/SDH difilter")
+                        add(strings.filteredMeta(stats.totalFilteredCount))
                     }
                 }.joinToString(" · ")
             }
 
             MediaInputSheet(
+                strings = strings,
                 videoName = state.videoFile?.displayName,
                 videoMeta = videoMetaLine,
                 isProbingVideo = state.isProbingVideo,
@@ -178,7 +238,7 @@ fun SynctraScreen(
                 },
             )
 
-            // Primary Action or Minimal Progress Strip
+            // Primary Action or Progress Strip
             if (state.isAnalyzing && state.progress != null) {
                 val prog = state.progress!!
                 Surface(
@@ -226,7 +286,7 @@ fun SynctraScreen(
                             onClick = { viewModel.cancelAnalysis() },
                             modifier = Modifier.align(Alignment.End),
                         ) {
-                            Text("Batalkan", fontSize = 12.sp, color = SynctraColors.InkSecondary)
+                            Text(strings.cancelAction, fontSize = 12.sp, color = SynctraColors.InkSecondary)
                         }
                     }
                 }
@@ -246,14 +306,14 @@ fun SynctraScreen(
                     ),
                 ) {
                     Text(
-                        text = if (state.result != null) "Cek ulang" else "Cek sinkronisasi",
+                        text = if (state.result != null) strings.recheckSyncCta else strings.checkSyncCta,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
             }
 
-            // Error callout (left-accent bar)
+            // Error callout
             AnimatedVisibility(visible = state.errorMessage != null) {
                 state.errorMessage?.let { err ->
                     Row(
@@ -278,23 +338,26 @@ fun SynctraScreen(
                                 .padding(horizontal = 12.dp, vertical = 12.dp),
                         )
                         TextButton(onClick = { viewModel.dismissError() }) {
-                            Text("Tutup", fontSize = 12.sp, color = SynctraColors.Danger)
+                            Text(strings.closeAction, fontSize = 12.sp, color = SynctraColors.Danger)
                         }
                     }
                 }
             }
 
-            // Result + Test Dengar
+            // Result + Audio Check
             state.result?.let { syncResult ->
                 ResultCard(
+                    strings = strings,
                     result = syncResult,
                     effectiveOffsetMs = state.effectiveOffsetMs,
                     manualNudgeMs = state.manualNudgeMs,
                     onCopySeconds = { copyWithToast(it, it) },
                     onCopyMillis = { copyWithToast(it, "$it ms") },
+                    onOpenSaveSrt = { showExportSheet = true },
                 )
 
                 AudioPreviewCard(
+                    strings = strings,
                     previewState = state.previewState,
                     activeSubtitleText = state.activePreviewSubtitle,
                     windows = syncResult.windowResults,
@@ -308,7 +371,37 @@ fun SynctraScreen(
                 )
             }
 
+            // Recent check history
+            if (state.recentHistory.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                RecentHistoryCard(
+                    strings = strings,
+                    entries = state.recentHistory,
+                    onCopyOffset = { copyWithToast(it, it) },
+                    onClearHistory = { viewModel.clearHistory() },
+                )
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
         }
+    }
+
+    // Export .srt review bottom sheet
+    if (showExportSheet && state.result != null && state.parsedSubtitle != null) {
+        val cleaned = state.cleanedPreviewStats
+        ExportSrtSheet(
+            strings = strings,
+            totalCueCount = state.parsedSubtitle!!.allCues.size,
+            effectiveOffsetMs = state.effectiveOffsetMs,
+            result = state.result!!,
+            flaggedAds = cleaned?.flaggedAdOrCreditCues.orEmpty(),
+            flaggedSdh = cleaned?.flaggedSdhCues.orEmpty(),
+            onDismiss = { showExportSheet = false },
+            onConfirmSave = { options ->
+                showExportSheet = false
+                pendingExportOptions = options
+                createSrtLauncher.launch(viewModel.suggestedExportFileName())
+            },
+        )
     }
 }

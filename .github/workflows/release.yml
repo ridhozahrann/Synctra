@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0)'
+        description: 'Release tag (e.g. v1.2.0)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.2.0'
 
 permissions:
   contents: write
@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
@@ -30,68 +30,95 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests & build Release APK
-        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease
+      - name: Run unit tests & build Release APKs (arm64-v8a + universal)
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease -PabiSplits=true
 
-      - name: Align & sign Release APK
+      - name: Align & sign Release APKs
         id: sign
         env:
           TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           BUILD_TOOLS=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -n 1)
           KEYSTORE="$RUNNER_TEMP/synctra-release.jks"
-          keytool -genkeypair -v \
-            -keystore "$KEYSTORE" \
-            -storepass synctra-ci-pass \
-            -keypass synctra-ci-pass \
-            -alias synctra \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Synctra, OU=Mobile, O=Synctra, L=Jakarta, ST=DKI, C=ID"
 
-          ALIGNED="$RUNNER_TEMP/Synctra-${TAG_NAME}-aligned.apk"
-          SIGNED="$RUNNER_TEMP/Synctra-${TAG_NAME}-universal.apk"
+          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "Using persistent signing keystore from repository secrets."
+            echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE"
+            KS_PASS="$KEYSTORE_PASSWORD"
+            ALIAS="$KEY_ALIAS"
+            K_PASS="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+          else
+            echo "No signing secret configured; generating ephemeral release key."
+            KS_PASS="synctra-ci-pass"
+            ALIAS="synctra"
+            K_PASS="synctra-ci-pass"
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE" \
+              -storepass "$KS_PASS" \
+              -keypass "$K_PASS" \
+              -alias "$ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Synctra, OU=Mobile, O=Synctra, L=Jakarta, ST=DKI, C=ID"
+          fi
 
-          "$BUILD_TOOLS/zipalign" -f -p 4 \
-            app/build/outputs/apk/release/app-release-unsigned.apk \
-            "$ALIGNED"
+          OUT_DIR="$RUNNER_TEMP/signed"
+          mkdir -p "$OUT_DIR"
 
-          "$BUILD_TOOLS/apksigner" sign \
-            --ks "$KEYSTORE" \
-            --ks-key-alias synctra \
-            --ks-pass pass:synctra-ci-pass \
-            --key-pass pass:synctra-ci-pass \
-            --out "$SIGNED" \
-            "$ALIGNED"
+          sign_apk() {
+            local IN_APK="$1"
+            local OUT_NAME="$2"
+            local ALIGNED="$RUNNER_TEMP/aligned-${OUT_NAME}"
+            local SIGNED="$OUT_DIR/${OUT_NAME}"
+            "$BUILD_TOOLS/zipalign" -f -p 4 "$IN_APK" "$ALIGNED"
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$KEYSTORE" \
+              --ks-key-alias "$ALIAS" \
+              --ks-pass "pass:$KS_PASS" \
+              --key-pass "pass:$K_PASS" \
+              --out "$SIGNED" \
+              "$ALIGNED"
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$SIGNED"
+          }
 
-          "$BUILD_TOOLS/apksigner" verify --print-certs "$SIGNED"
-          ls -lh "$SIGNED"
-          echo "apk_path=$SIGNED" >> "$GITHUB_OUTPUT"
+          sign_apk "app/build/outputs/apk/release/app-arm64-v8a-release-unsigned.apk" "Synctra-${TAG_NAME}-arm64-v8a.apk"
+          sign_apk "app/build/outputs/apk/release/app-universal-release-unsigned.apk" "Synctra-${TAG_NAME}-universal.apk"
+
+          ls -lh "$OUT_DIR"
+          echo "arm64_apk=$OUT_DIR/Synctra-${TAG_NAME}-arm64-v8a.apk" >> "$GITHUB_OUTPUT"
+          echo "universal_apk=$OUT_DIR/Synctra-${TAG_NAME}-universal.apk" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ steps.sign.outputs.tag_name }}
-          APK_PATH: ${{ steps.sign.outputs.apk_path }}
+          ARM64_APK: ${{ steps.sign.outputs.arm64_apk }}
+          UNIVERSAL_APK: ${{ steps.sign.outputs.universal_apk }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "$APK_PATH" --clobber
+            gh release upload "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" --clobber
           else
-            gh release create "$TAG_NAME" "$APK_PATH" \
+            gh release create "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" \
               --title "Synctra $TAG_NAME" \
               --notes "## Synctra $TAG_NAME
 
-          Offline Android subtitle sync checker (~7 MB universal APK).
+          Offline Android subtitle sync checker.
 
-          ### What's included
-          - Multi-audio track selector (e.g. pick English or Hindi track for both analysis and 10-second audio preview)
-          - Redesigned matte dark UI with monospace timecode readouts and segmented fine-tune controls
-          - Automatic subtitle cleanup (ads, URLs, translator credits, SDH cues)
-          - Audio-only multi-point sampling with Media3 + FFmpeg audio decoder (AAC, MP3, Opus, FLAC, AC-3, E-AC-3, DTS, TrueHD, ALAC)
-          - Progressive drift / FPS mismatch detection
+          ### Downloads
+          - **\`Synctra-${TAG_NAME}-arm64-v8a.apk\`** (~3 MB) — recommended for almost all modern 64-bit Android phones.
+          - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
-          ### Install
-          Download \`Synctra-${TAG_NAME}-universal.apk\` below and install on Android 7.0+ (API 24+)."
+          ### What's new in $TAG_NAME
+          - New minimalist subtitle-frame app icon (with Android 13+ monochrome themed icon support)
+          - Save synced \`.srt\` directly with an interactive ad/credit deletion review (uncheck any false positive to keep it) and optional FPS drift stretch correction
+          - ~3x lighter VAD CPU load on 48 kHz audio (16 kHz decimation) + reusable PCM decode buffers
+          - Recent sync history (tap any entry to copy offset)
+          - Instant Indonesian / English UI toggle (defaults to system language)
+          - Compact \`arm64-v8a\` release APK and persistent CI keystore secret support"
           fi

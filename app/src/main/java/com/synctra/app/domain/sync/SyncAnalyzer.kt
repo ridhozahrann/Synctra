@@ -140,7 +140,7 @@ object SyncAnalyzer {
             else -> DriftSeverity.NONE
         }
 
-        val cause = when (severity) {
+        val causePair = when (severity) {
             DriftSeverity.NONE -> null
             DriftSeverity.MILD, DriftSeverity.SEVERE -> classifyDriftCause(absSlope, spreadMs)
         }
@@ -149,19 +149,27 @@ object SyncAnalyzer {
             severity = severity,
             driftMsPerHour = slopeMsPerHour,
             spreadMs = spreadMs,
-            suspectedCause = cause,
+            suspectedCause = causePair?.second,
+            causeKey = causePair?.first,
+            anchorTimeMs = (meanX * 3_600_000.0).toLong(),
+            anchorOffsetMs = meanY.toLong(),
         )
     }
 
-    private fun classifyDriftCause(absSlopeMsPerHour: Double, spreadMs: Long): String {
-        // 23.976 fps vs 25.000 fps => ~4.27% speed difference => ~153,750 ms/hour
-        // 24.000 fps vs 25.000 fps => ~4.17% speed difference => ~150,000 ms/hour
-        // 23.976 fps vs 24.000 fps => ~0.10% speed difference => ~3,600 ms/hour
+    private fun classifyDriftCause(absSlopeMsPerHour: Double, spreadMs: Long): Pair<com.synctra.app.domain.model.DriftCauseKey, String> {
         return when {
-            absSlopeMsPerHour in 120_000.0..185_000.0 -> "Kemungkinan besar beda FPS (23.976 fps vs 25 fps)"
-            absSlopeMsPerHour in 2_200.0..5_500.0 -> "Kemungkinan beda FPS tipis (23.976 fps vs 24 fps)"
-            spreadMs >= 2_000L -> "Kemungkinan beda versi rilis (misal Theatrical vs Extended / beda potongan iklan)"
-            else -> "Offset bergeser bertahap — cek beberapa titik di Test Dengar"
+            absSlopeMsPerHour in 120_000.0..185_000.0 ->
+                com.synctra.app.domain.model.DriftCauseKey.FPS_23976_VS_25 to
+                    "Kemungkinan besar beda FPS (23.976 fps vs 25 fps)"
+            absSlopeMsPerHour in 2_200.0..5_500.0 ->
+                com.synctra.app.domain.model.DriftCauseKey.FPS_23976_VS_24 to
+                    "Kemungkinan beda FPS tipis (23.976 fps vs 24 fps)"
+            spreadMs >= 2_000L ->
+                com.synctra.app.domain.model.DriftCauseKey.DIFFERENT_CUT to
+                    "Kemungkinan beda versi rilis (misal Theatrical vs Extended / beda potongan iklan)"
+            else ->
+                com.synctra.app.domain.model.DriftCauseKey.GRADUAL_SHIFT to
+                    "Offset bergeser bertahap — cek beberapa titik di Test Dengar"
         }
     }
 
