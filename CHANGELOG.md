@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.2.2
+- Fixed scrolling inside the Save `.srt` review sheet by replacing Material 3's draggable `ModalBottomSheet` with a bottom-anchored sheet dialog containing a single unified `LazyColumn` (eliminates gesture conflicts with drag-to-dismiss and gives the list full available height).
+
 ## v1.2.1
 - Fixed VAD accuracy regression from v1.2.0 by restoring full native sample-rate filtering (eliminates high-frequency music aliasing on 48 kHz tracks) and 90-second sampling windows.
 - Anchored extracted audio envelopes to the actual first decoded PCM presentation timestamp (PTS) to eliminate seek-boundary offset drift.

@@ -115,8 +115,6 @@ jobs:
           - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
           ### What's new in $TAG_NAME
-          - Fixed VAD accuracy regression from v1.2.0 by running at native sample rate (eliminates high-frequency aliasing on 48 kHz tracks) and restoring 90-second sampling windows
-          - Anchored audio envelopes to the exact first decoded PCM timestamp to eliminate seek-boundary offset bias
-          - Prioritized the Center dialogue channel on 5.1 / 7.1 surround tracks over surround BGM and LFE
-          - Kept all v1.2.0 features: Concept C icon, \`.srt\` export with interactive ad-deletion review & FPS drift correction, reusable PCM buffers, recent history, ID/EN toggle, and compact ~2.9 MB \`arm64-v8a\` APK"
+          - Fixed intermittent scroll lock in the Save \`.srt\` review sheet by replacing the nested-scroll \`ModalBottomSheet\` with a bottom-anchored dialog and single unified \`LazyColumn\`
+          - Includes all v1.2.1 improvements: full-rate VAD (zero 48 kHz aliasing), 5.1/7.1 Center-channel dialogue prioritization, exact PCM PTS anchoring, Concept C icon, recent history, ID/EN toggle, and compact ~2.9 MB \`arm64-v8a\` APK"
           fi

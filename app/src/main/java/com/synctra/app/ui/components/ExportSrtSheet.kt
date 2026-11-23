@@ -1,33 +1,41 @@
 package com.synctra.app.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,12 +43,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.FlaggedSubtitleCue
 import com.synctra.app.domain.model.SyncResult
@@ -53,11 +66,12 @@ data class ExportSrtOptions(
 )
 
 /**
- * Interactive bottom sheet shown before saving a synced `.srt` file.
- * Lists every flagged ad/credit cue with timestamp & reason so the user can review
- * and uncheck any false positive before writing the file.
+ * Bottom-anchored review sheet shown before saving a synced `.srt` file.
+ *
+ * Uses a dedicated bottom-anchored [Dialog] with a single unified [LazyColumn] instead of
+ * Material 3's draggable ModalBottomSheet so vertical scrolling never conflicts with
+ * sheet drag-to-dismiss gestures.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExportSrtSheet(
     strings: AppStrings,
@@ -69,8 +83,6 @@ fun ExportSrtSheet(
     onDismiss: () -> Unit,
     onConfirmSave: (ExportSrtOptions) -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
     // Default: all flagged ads/credits checked for removal; SDH unchecked (kept) by default
     var removedAdIndices by remember(flaggedAds) {
         mutableStateOf(flaggedAds.map { it.cue.index }.toSet())
@@ -84,218 +96,293 @@ fun ExportSrtSheet(
     val keptCount = (totalCueCount - totalRemovedCount).coerceAtLeast(0)
     val allAdsSelected = flaggedAds.isNotEmpty() && removedAdIndices.size == flaggedAds.size
 
-    ModalBottomSheet(
+    val listState = rememberLazyListState()
+    val maxSheetHeight = (LocalConfiguration.current.screenHeightDp * 0.84f).dp
+
+    Dialog(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = SynctraColors.Surface,
-        contentColor = SynctraColors.InkPrimary,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 20.dp),
-        ) {
-            Text(
-                text = strings.exportTitle,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = SynctraColors.InkPrimary,
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Scrim behind sheet — tapping outside dismisses
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss,
+                    ),
             )
 
-            // Timing mode picker (only shown when drift was detected)
-            if (result.drift.severity != DriftSeverity.NONE) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = strings.exportModeLabel,
-                    fontSize = 12.sp,
-                    color = SynctraColors.InkMuted,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    ModeChip(
-                        label = strings.exportModeConstant(formatSignedSeconds(effectiveOffsetMs)),
-                        selected = !applyDrift,
-                        modifier = Modifier.weight(1f),
-                        onClick = { applyDrift = false },
-                    )
-                    ModeChip(
-                        label = strings.exportModeDrift,
-                        selected = applyDrift,
-                        modifier = Modifier.weight(1f),
-                        onClick = { applyDrift = true },
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Flagged ads & credits review section
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .heightIn(max = maxSheetHeight),
+                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                color = SynctraColors.Surface,
+                border = BorderStroke(1.dp, SynctraColors.Hairline),
             ) {
-                Text(
-                    text = strings.exportAdsSectionTitle(flaggedAds.size),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = SynctraColors.InkPrimary,
-                )
-                if (flaggedAds.isNotEmpty()) {
-                    TextButton(
-                        onClick = {
-                            removedAdIndices = if (allAdsSelected) {
-                                emptySet()
-                            } else {
-                                flaggedAds.map { it.cue.index }.toSet()
-                            }
-                        },
-                    ) {
-                        Text(
-                            text = if (allAdsSelected) strings.exportKeepAllAds else strings.exportSelectAllAds,
-                            fontSize = 12.sp,
-                            color = SynctraColors.Accent,
-                        )
-                    }
-                }
-            }
-
-            if (flaggedAds.isEmpty()) {
-                Text(
-                    text = strings.exportNoAdsDetected,
-                    fontSize = 12.sp,
-                    color = SynctraColors.InkMuted,
-                    modifier = Modifier.padding(vertical = 6.dp),
-                )
-            } else {
-                Text(
-                    text = strings.exportAdsHint,
-                    fontSize = 12.sp,
-                    color = SynctraColors.InkMuted,
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Surface(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 260.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    color = SynctraColors.Stage,
-                    border = BorderStroke(1.dp, SynctraColors.Hairline),
+                        .navigationBarsPadding(),
                 ) {
-                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                        items(flaggedAds, key = { it.cue.index }) { item ->
-                            val willRemove = item.cue.index in removedAdIndices
-                            FlaggedCueRow(
-                                item = item,
-                                reasonLabel = strings.flagReasonLabel(item.reason),
-                                checkedForRemoval = willRemove,
-                                onToggle = {
-                                    removedAdIndices = if (willRemove) {
-                                        removedAdIndices - item.cue.index
-                                    } else {
-                                        removedAdIndices + item.cue.index
-                                    }
-                                },
-                            )
-                            HorizontalDivider(
-                                color = SynctraColors.Hairline,
-                                modifier = Modifier.padding(horizontal = 12.dp),
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Optional SDH removal switch (off by default)
-            if (flaggedSdh.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = SynctraColors.SurfaceSubtle,
-                    border = BorderStroke(1.dp, SynctraColors.Hairline),
-                ) {
+                    // Fixed Header
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { removeAllSdh = !removeAllSdh }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = strings.exportSdhToggleTitle(flaggedSdh.size),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = SynctraColors.InkPrimary,
-                            )
-                            Text(
-                                text = strings.exportSdhToggleSubtitle,
-                                fontSize = 11.sp,
-                                color = SynctraColors.InkMuted,
+                        Text(
+                            text = strings.exportTitle,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = SynctraColors.InkPrimary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(SynctraColors.SurfaceSubtle)
+                                .clickable(onClick = onDismiss),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = strings.closeAction,
+                                tint = SynctraColors.InkSecondary,
+                                modifier = Modifier.size(18.dp),
                             )
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(
-                            checked = removeAllSdh,
-                            onCheckedChange = { removeAllSdh = it },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = SynctraColors.ActionInk,
-                                checkedTrackColor = SynctraColors.Accent,
-                                uncheckedThumbColor = SynctraColors.InkSecondary,
-                                uncheckedTrackColor = SynctraColors.Stage,
-                            ),
+                    }
+
+                    HorizontalDivider(color = SynctraColors.Hairline)
+
+                    // Single unified scroll container (zero nested scroll conflicts!)
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
+                    ) {
+                        // Timing mode picker (only shown when drift was detected)
+                        if (result.drift.severity != DriftSeverity.NONE) {
+                            item(key = "timing_mode") {
+                                Text(
+                                    text = strings.exportModeLabel,
+                                    fontSize = 12.sp,
+                                    color = SynctraColors.InkMuted,
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    ModeChip(
+                                        label = strings.exportModeConstant(formatSignedSeconds(effectiveOffsetMs)),
+                                        selected = !applyDrift,
+                                        modifier = Modifier.weight(1f),
+                                        onClick = { applyDrift = false },
+                                    )
+                                    ModeChip(
+                                        label = strings.exportModeDrift,
+                                        selected = applyDrift,
+                                        modifier = Modifier.weight(1f),
+                                        onClick = { applyDrift = true },
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+                            }
+                        }
+
+                        // Flagged ads & credits header
+                        item(key = "ads_header") {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = strings.exportAdsSectionTitle(flaggedAds.size),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = SynctraColors.InkPrimary,
+                                )
+                                if (flaggedAds.isNotEmpty()) {
+                                    TextButton(
+                                        onClick = {
+                                            removedAdIndices = if (allAdsSelected) {
+                                                emptySet()
+                                            } else {
+                                                flaggedAds.map { it.cue.index }.toSet()
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    ) {
+                                        Text(
+                                            text = if (allAdsSelected) strings.exportKeepAllAds else strings.exportSelectAllAds,
+                                            fontSize = 12.sp,
+                                            color = SynctraColors.Accent,
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (flaggedAds.isEmpty()) {
+                                Text(
+                                    text = strings.exportNoAdsDetected,
+                                    fontSize = 12.sp,
+                                    color = SynctraColors.InkMuted,
+                                    modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                                )
+                            } else {
+                                Text(
+                                    text = strings.exportAdsHint,
+                                    fontSize = 12.sp,
+                                    color = SynctraColors.InkMuted,
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                            }
+                        }
+
+                        // Flagged ad/credit items rendered directly inside the single LazyColumn
+                        itemsIndexed(
+                            items = flaggedAds,
+                            key = { _, item -> "ad_${item.cue.index}" },
+                        ) { idx, item ->
+                            val willRemove = item.cue.index in removedAdIndices
+                            val isFirst = idx == 0
+                            val isLast = idx == flaggedAds.lastIndex
+                            val shape = RoundedCornerShape(
+                                topStart = if (isFirst) 12.dp else 0.dp,
+                                topEnd = if (isFirst) 12.dp else 0.dp,
+                                bottomStart = if (isLast) 12.dp else 0.dp,
+                                bottomEnd = if (isLast) 12.dp else 0.dp,
+                            )
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = shape,
+                                color = SynctraColors.Stage,
+                                border = BorderStroke(0.5.dp, SynctraColors.Hairline),
+                            ) {
+                                FlaggedCueRow(
+                                    item = item,
+                                    reasonLabel = strings.flagReasonLabel(item.reason),
+                                    checkedForRemoval = willRemove,
+                                    onToggle = {
+                                        removedAdIndices = if (willRemove) {
+                                            removedAdIndices - item.cue.index
+                                        } else {
+                                            removedAdIndices + item.cue.index
+                                        }
+                                    },
+                                )
+                            }
+                        }
+
+                        // Optional SDH removal switch (off by default)
+                        if (flaggedSdh.isNotEmpty()) {
+                            item(key = "sdh_toggle") {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = SynctraColors.SurfaceSubtle,
+                                    border = BorderStroke(1.dp, SynctraColors.Hairline),
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { removeAllSdh = !removeAllSdh }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = strings.exportSdhToggleTitle(flaggedSdh.size),
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = SynctraColors.InkPrimary,
+                                            )
+                                            Text(
+                                                text = strings.exportSdhToggleSubtitle,
+                                                fontSize = 11.sp,
+                                                color = SynctraColors.InkMuted,
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Switch(
+                                            checked = removeAllSdh,
+                                            onCheckedChange = { removeAllSdh = it },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = SynctraColors.ActionInk,
+                                                checkedTrackColor = SynctraColors.Accent,
+                                                uncheckedThumbColor = SynctraColors.InkSecondary,
+                                                uncheckedTrackColor = SynctraColors.Stage,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Fixed Footer
+                    HorizontalDivider(color = SynctraColors.Hairline)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                    ) {
+                        Text(
+                            text = strings.exportSummary(keptCount, totalRemovedCount),
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = SynctraColors.InkSecondary,
                         )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                val excluded = buildSet {
+                                    addAll(removedAdIndices)
+                                    if (removeAllSdh) {
+                                        flaggedSdh.forEach { add(it.cue.index) }
+                                    }
+                                }
+                                onConfirmSave(
+                                    ExportSrtOptions(
+                                        excludedCueIndices = excluded,
+                                        applyDriftCorrection = applyDrift,
+                                    )
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = SynctraColors.ActionBg,
+                                contentColor = SynctraColors.ActionInk,
+                            ),
+                        ) {
+                            Text(
+                                text = strings.exportConfirmCta,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Footer summary + save button
-            Text(
-                text = strings.exportSummary(keptCount, totalRemovedCount),
-                fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace,
-                color = SynctraColors.InkSecondary,
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Button(
-                onClick = {
-                    val excluded = buildSet {
-                        addAll(removedAdIndices)
-                        if (removeAllSdh) {
-                            flaggedSdh.forEach { add(it.cue.index) }
-                        }
-                    }
-                    onConfirmSave(
-                        ExportSrtOptions(
-                            excludedCueIndices = excluded,
-                            applyDriftCorrection = applyDrift,
-                        )
-                    )
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = SynctraColors.ActionBg,
-                    contentColor = SynctraColors.ActionInk,
-                ),
-            ) {
-                Text(
-                    text = strings.exportConfirmCta,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
             }
         }
     }
@@ -338,7 +425,7 @@ private fun FlaggedCueRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onToggle)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            .padding(start = 6.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(
