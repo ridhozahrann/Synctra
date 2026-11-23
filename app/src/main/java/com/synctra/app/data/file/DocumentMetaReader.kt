@@ -71,9 +71,9 @@ object DocumentMetaReader {
         if (bytes < 0L) return ""
         return when {
             bytes < 1024L -> "$bytes B"
-            bytes < 1024L * 1024L -> String.format("%.1f KB", bytes / 1024.0)
-            bytes < 1024L * 1024L * 1024L -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
-            else -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+            bytes < 1024L * 1024L -> String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
+            bytes < 1024L * 1024L * 1024L -> String.format(java.util.Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
+            else -> String.format(java.util.Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
         }
     }
 }

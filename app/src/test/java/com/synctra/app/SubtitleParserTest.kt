@@ -68,4 +68,22 @@ class SubtitleParserTest {
         assertEquals(70_000L, parsed.allCues[1].startMs)
         assertTrue(parsed.allCues[1].cleanText.contains("Mari kita mulai"))
     }
+
+    @Test
+    fun parsesMalformedSrtWithoutBlankLinesBetweenCues() {
+        val malformed = """
+            1
+            00:00:05,000 --> 00:00:07,500
+            Baris pertama.
+            2
+            00:00:08,000 --> 00:00:10,000
+            Baris kedua.
+        """.trimIndent()
+
+        val parsed = SubtitleParser.parse(malformed.toByteArray(Charsets.UTF_8), "malformed.srt")
+        assertEquals(2, parsed.allCues.size)
+        assertEquals("Baris pertama.", parsed.allCues[0].cleanText)
+        assertEquals("Baris kedua.", parsed.allCues[1].cleanText)
+        assertEquals(8_000L, parsed.allCues[1].startMs)
+    }
 }

@@ -69,7 +69,7 @@ class AudioPreviewPlayer(
 
         _state.value = AudioPreviewState(
             isPlaying = true,
-            isBuffering = true,
+            isBuffering = exo.playbackState != Player.STATE_READY,
             clipStartMs = safeStart,
             clipDurationMs = durationMs,
             currentPositionMs = safeStart,
@@ -104,6 +104,9 @@ class AudioPreviewPlayer(
     private fun ensurePlayer(videoUri: Uri): ExoPlayer {
         val existing = player
         if (existing != null && preparedUri == videoUri) {
+            if (existing.playbackState == Player.STATE_IDLE) {
+                existing.prepare()
+            }
             return existing
         }
 
@@ -192,6 +195,7 @@ class AudioPreviewPlayer(
                 _state.value = _state.value.copy(
                     currentPositionMs = pos.coerceAtLeast(clipStartMs),
                     isPlaying = exo.playWhenReady && exo.playbackState != Player.STATE_ENDED,
+                    isBuffering = exo.playbackState == Player.STATE_BUFFERING,
                 )
                 delay(50L)
             }

@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -86,6 +87,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         )
     )
     private var analysisJob: Job? = null
+    private var pendingExportOptions: ExportSrtOptions? = null
 
     val uiState: StateFlow<SynctraUiState> = combine(
         internalState,
@@ -282,6 +284,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         uri = videoFile.uri,
                         windows = windows,
                         selectedAudioIndex = selectedTrack.audioIndex,
+                        isCancelled = { !isActive },
                     ) { idx, total, _ ->
                         val frac = 0.15f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.60f
                         val winName = strings.windowShortLabel(idx, total)
@@ -395,6 +398,21 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     fun suggestedExportFileName(): String =
         SrtExporter.suggestedOutputFileName(internalState.value.subtitleFile?.displayName)
 
+    fun prepareExport(options: ExportSrtOptions) {
+        pendingExportOptions = options
+    }
+
+    fun consumePendingExport(
+        destinationUri: Uri?,
+        onSaved: (keptCount: Int, removedCount: Int) -> Unit,
+    ) {
+        val options = pendingExportOptions
+        pendingExportOptions = null
+        if (destinationUri != null && options != null) {
+            exportSyncedSrt(destinationUri, options, onSaved)
+        }
+    }
+
     fun exportSyncedSrt(
         destinationUri: Uri,
         options: ExportSrtOptions,
@@ -446,6 +464,10 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             startPreviewForWindow(internalState.value.selectedPreviewWindowIndex)
         }
+    }
+
+    fun stopAudioPreview() {
+        previewPlayer.stop()
     }
 
     private fun startPreviewForWindow(windowIndex: Int) {

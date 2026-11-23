@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.1
+- Fixed `AudioPreviewPlayer` getting stuck showing "Loading audio..." when replaying a buffered clip, and added automatic recovery from `STATE_IDLE` after playback errors.
+- Added cooperative cancellation inside `AudioSampleExtractor` so tapping Cancel stops background audio decoding immediately.
+- Moved pending `.srt` export options into `SyncViewModel` so saving survives configuration changes / activity recreation while Android's document picker is open.
+- Auto-pause 10-second audio preview when the app moves to the background (`ON_STOP`).
+- Hardened SRT/VTT parsing against malformed files missing blank lines between cues, and fixed `DefaultLocale` Lint warnings in `DocumentMetaReader`.
+
 ## v1.3.0
 - Added `FpsStretchMatcher` to automatically detect and lock standard cinema FPS mismatches (`23.976 ↔ 25`, `24 ↔ 25`, `23.976 ↔ 24`) directly on extracted audio envelopes (< 30 ms, zero extra decoding), eliminating the ~3.8s intra-window smear and ±120s range limit on PAL/NTSC mismatches.
 - Fixed subtitle-time axis bug in drift regression (`SyncAnalyzer` now fits weighted least-squares directly on `t_sub = centerMs - offsetMs` so exported `.srt` timestamps match to within ~20–45 ms from start to finish).

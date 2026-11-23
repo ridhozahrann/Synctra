@@ -106,6 +106,7 @@ class AudioSampleExtractor(private val context: Context) {
         uri: Uri,
         windows: List<SampleWindow>,
         selectedAudioIndex: Int = 0,
+        isCancelled: () -> Boolean = { false },
         onWindowProgress: (windowIndex: Int, totalWindows: Int, window: SampleWindow) -> Unit = { _, _, _ -> },
     ): List<ExtractedWindowAudio> {
         val dataSource = DefaultDataSource.Factory(context.applicationContext).createDataSource()
@@ -126,6 +127,7 @@ class AudioSampleExtractor(private val context: Context) {
                 val results = ArrayList<ExtractedWindowAudio>(windows.size)
 
                 for ((idx, window) in windows.withIndex()) {
+                    if (isCancelled()) throw kotlinx.coroutines.CancellationException("Analysis cancelled")
                     onWindowProgress(idx, windows.size, window)
                     val (actualStartMs, envelope) = extractSingleWindow(
                         dataSource = dataSource,
@@ -135,6 +137,7 @@ class AudioSampleExtractor(private val context: Context) {
                         targetTrackOutput = targetEntry.trackOutput,
                         decoder = decoder,
                         window = window,
+                        isCancelled = isCancelled,
                     )
                     results.add(
                         ExtractedWindowAudio(
@@ -163,6 +166,7 @@ class AudioSampleExtractor(private val context: Context) {
         targetTrackOutput: AudioCaptureTrackOutput,
         decoder: AudioPacketDecoder,
         window: SampleWindow,
+        isCancelled: () -> Boolean,
     ): Pair<Long, FloatArray> {
         val startUs = window.startMs * 1000L
         val endUs = window.endMs * 1000L
@@ -176,7 +180,7 @@ class AudioSampleExtractor(private val context: Context) {
         var windowFinished = false
 
         targetTrackOutput.packetListener = { packetBytes, packetSize, ptsUs ->
-            if (!windowFinished) {
+            if (!windowFinished && !isCancelled()) {
                 if (ptsUs >= endUs + 500_000L) {
                     windowFinished = true
                 } else {
@@ -208,27 +212,33 @@ class AudioSampleExtractor(private val context: Context) {
         var readIterations = 0
         val maxReadIterations = 1_000_000
 
-        while (!windowFinished && readIterations < maxReadIterations) {
-            readIterations++
-            val readResult = try {
-                session.extractor.read(extractorInput, positionHolder)
-            } catch (_: EOFException) {
-                Extractor.RESULT_END_OF_INPUT
-            }
-
-            when (readResult) {
-                Extractor.RESULT_CONTINUE -> Unit
-                Extractor.RESULT_SEEK -> {
-                    currentPos = positionHolder.position.coerceAtLeast(0L)
-                    dataSource.close()
-                    reopenAt(dataSource, uri, currentPos)
-                    extractorInput = DefaultExtractorInput(dataSource, currentPos, totalLength)
+        try {
+            while (!windowFinished && readIterations < maxReadIterations) {
+                if ((readIterations and 63) == 0 && isCancelled()) {
+                    throw kotlinx.coroutines.CancellationException("Analysis cancelled")
                 }
-                Extractor.RESULT_END_OF_INPUT -> break
+                readIterations++
+                val readResult = try {
+                    session.extractor.read(extractorInput, positionHolder)
+                } catch (_: EOFException) {
+                    Extractor.RESULT_END_OF_INPUT
+                }
+
+                when (readResult) {
+                    Extractor.RESULT_CONTINUE -> Unit
+                    Extractor.RESULT_SEEK -> {
+                        currentPos = positionHolder.position.coerceAtLeast(0L)
+                        dataSource.close()
+                        reopenAt(dataSource, uri, currentPos)
+                        extractorInput = DefaultExtractorInput(dataSource, currentPos, totalLength)
+                    }
+                    Extractor.RESULT_END_OF_INPUT -> break
+                }
             }
+        } finally {
+            targetTrackOutput.packetListener = null
         }
 
-        targetTrackOutput.packetListener = null
         val actualStartMs = if (firstAcceptedPtsUs != C.TIME_UNSET) {
             (firstAcceptedPtsUs / 1000L).coerceAtLeast(0L)
         } else {

@@ -45,11 +45,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.synctra.app.data.file.DocumentMetaReader
 import com.synctra.app.ui.components.AudioPreviewCard
-import com.synctra.app.ui.components.ExportSrtOptions
 import com.synctra.app.ui.components.ExportSrtSheet
 import com.synctra.app.ui.components.MediaInputSheet
 import com.synctra.app.ui.components.RecentHistoryCard
@@ -71,7 +72,11 @@ fun SynctraScreen(
     val scope = rememberCoroutineScope()
 
     var showExportSheet by remember { mutableStateOf(false) }
-    var pendingExportOptions by remember { mutableStateOf<ExportSrtOptions?>(null) }
+
+    // Pause audio preview automatically if user switches apps or presses Home
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        viewModel.stopAudioPreview()
+    }
 
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -88,13 +93,9 @@ fun SynctraScreen(
     val createSrtLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/x-subrip"),
     ) { uri ->
-        val options = pendingExportOptions
-        pendingExportOptions = null
-        if (uri != null && options != null) {
-            viewModel.exportSyncedSrt(uri, options) { kept, removed ->
-                scope.launch {
-                    snackbarHostState.showSnackbar(strings.savedSrtToast(kept, removed))
-                }
+        viewModel.consumePendingExport(uri) { kept, removed ->
+            scope.launch {
+                snackbarHostState.showSnackbar(strings.savedSrtToast(kept, removed))
             }
         }
     }
@@ -399,7 +400,7 @@ fun SynctraScreen(
             onDismiss = { showExportSheet = false },
             onConfirmSave = { options ->
                 showExportSheet = false
-                pendingExportOptions = options
+                viewModel.prepareExport(options)
                 createSrtLauncher.launch(viewModel.suggestedExportFileName())
             },
         )

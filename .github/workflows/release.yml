@@ -115,8 +115,8 @@ jobs:
           - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
           ### What's new in $TAG_NAME
-          - Automatic cinema FPS mismatch detection (\`23.976 ↔ 25\`, \`24 ↔ 25\`, \`23.976 ↔ 24\`) via \`FpsStretchMatcher\` — eliminates intra-window smear and ±120s range limits on PAL/NTSC mismatches
-          - Fixed subtitle-time regression math in \`SyncAnalyzer\` & \`SrtExporter\` so FPS-stretched \`.srt\` exports stay accurate across the full movie
-          - Outlier-safe drift detection (low-confidence noisy windows no longer trigger false drift; abrupt scene cuts are separated from linear FPS stretches)
-          - Drift-aware live subtitle lookup in 10-second Audio Check preview"
+          - Fixed 10-second Audio Check getting stuck on "Loading audio..." when replaying an already-buffered clip
+          - Made Cancel stop background audio extraction/decoding immediately
+          - Preserved pending \`.srt\` export options across screen rotation / Activity recreation while the Android file picker is open
+          - Auto-pause Audio Check preview when leaving the app, and hardened SRT/VTT parsing for files missing blank lines between cues"
           fi

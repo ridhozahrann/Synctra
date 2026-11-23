@@ -125,6 +125,16 @@ object SubtitleParser {
                 val textLines = mutableListOf<String>()
                 i++
                 while (i < lines.size && lines[i].isNotBlank()) {
+                    val trimmedNext = lines[i].trim()
+                    if (srtTimestampRegex.containsMatchIn(trimmedNext)) break
+                    // Handle missing blank line where the next cue's numeric index sits directly above a timestamp
+                    if (trimmedNext.all { it.isDigit() } &&
+                        i + 1 < lines.size &&
+                        srtTimestampRegex.containsMatchIn(lines[i + 1].trim())
+                    ) {
+                        i++
+                        break
+                    }
                     textLines.add(lines[i])
                     i++
                 }
@@ -187,6 +197,10 @@ object SubtitleParser {
                 val textLines = mutableListOf<String>()
                 i++
                 while (i < lines.size && lines[i].isNotBlank()) {
+                    val trimmedNext = lines[i].trim()
+                    if (srtTimestampRegex.containsMatchIn(trimmedNext) || vttShortTimestampRegex.containsMatchIn(trimmedNext)) {
+                        break
+                    }
                     textLines.add(lines[i])
                     i++
                 }
