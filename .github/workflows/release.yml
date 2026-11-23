@@ -115,10 +115,8 @@ jobs:
           - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
           ### What's new in $TAG_NAME
-          - New minimalist subtitle-frame app icon (with Android 13+ monochrome themed icon support)
-          - Save synced \`.srt\` directly with an interactive ad/credit deletion review (uncheck any false positive to keep it) and optional FPS drift stretch correction
-          - ~3x lighter VAD CPU load on 48 kHz audio (16 kHz decimation) + reusable PCM decode buffers
-          - Recent sync history (tap any entry to copy offset)
-          - Instant Indonesian / English UI toggle (defaults to system language)
-          - Compact \`arm64-v8a\` release APK and persistent CI keystore secret support"
+          - Fixed VAD accuracy regression from v1.2.0 by running at native sample rate (eliminates high-frequency aliasing on 48 kHz tracks) and restoring 90-second sampling windows
+          - Anchored audio envelopes to the exact first decoded PCM timestamp to eliminate seek-boundary offset bias
+          - Prioritized the Center dialogue channel on 5.1 / 7.1 surround tracks over surround BGM and LFE
+          - Kept all v1.2.0 features: Concept C icon, \`.srt\` export with interactive ad-deletion review & FPS drift correction, reusable PCM buffers, recent history, ID/EN toggle, and compact ~2.9 MB \`arm64-v8a\` APK"
           fi

@@ -127,7 +127,7 @@ class AudioSampleExtractor(private val context: Context) {
 
                 for ((idx, window) in windows.withIndex()) {
                     onWindowProgress(idx, windows.size, window)
-                    val envelope = extractSingleWindow(
+                    val (actualStartMs, envelope) = extractSingleWindow(
                         dataSource = dataSource,
                         uri = uri,
                         totalLength = totalLength,
@@ -138,7 +138,7 @@ class AudioSampleExtractor(private val context: Context) {
                     )
                     results.add(
                         ExtractedWindowAudio(
-                            window = window,
+                            window = window.copy(startMs = actualStartMs),
                             speechEnvelope = envelope,
                             usedFfmpegDecoder = decoder.isFfmpeg,
                         )
@@ -163,7 +163,7 @@ class AudioSampleExtractor(private val context: Context) {
         targetTrackOutput: AudioCaptureTrackOutput,
         decoder: AudioPacketDecoder,
         window: SampleWindow,
-    ): FloatArray {
+    ): Pair<Long, FloatArray> {
         val startUs = window.startMs * 1000L
         val endUs = window.endMs * 1000L
 
@@ -172,6 +172,7 @@ class AudioSampleExtractor(private val context: Context) {
 
         var vad: SpeechActivityDetector? = null
         var collector: SpeechActivityDetector.StreamingCollector? = null
+        var firstAcceptedPtsUs: Long = C.TIME_UNSET
         var windowFinished = false
 
         targetTrackOutput.packetListener = { packetBytes, packetSize, ptsUs ->
@@ -185,6 +186,7 @@ class AudioSampleExtractor(private val context: Context) {
                                 val detector = SpeechActivityDetector(sampleRate = sr)
                                 vad = detector
                                 collector = detector.StreamingCollector()
+                                firstAcceptedPtsUs = outPtsUs
                             }
                             collector?.pushPcm16(pcm, count, channels)
                         }
@@ -227,7 +229,12 @@ class AudioSampleExtractor(private val context: Context) {
         }
 
         targetTrackOutput.packetListener = null
-        return collector?.buildEnvelope() ?: FloatArray(0)
+        val actualStartMs = if (firstAcceptedPtsUs != C.TIME_UNSET) {
+            (firstAcceptedPtsUs / 1000L).coerceAtLeast(0L)
+        } else {
+            window.startMs
+        }
+        return actualStartMs to (collector?.buildEnvelope() ?: FloatArray(0))
     }
 
     private fun reopenAt(dataSource: DataSource, uri: Uri, position: Long) {

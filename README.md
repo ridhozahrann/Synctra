@@ -17,8 +17,8 @@ Instead of guessing subtitle delay values by trial and error inside VLC, MX Play
 ## How it works
 
 1. **Subtitle cleanup:** Parses `.srt`, `.ass`/`.ssa`, and `.vtt` files (UTF-8/BOM, UTF-16, Windows-1252) and flags website ads, translator credits, URLs, SDH cues (`[music]`, `♪`), and intro/outro edges before alignment.
-2. **Audio-only sampling:** Skips video decoding completely. If a container has multiple audio tracks (e.g. English and Hindi), you can choose which track to analyze and preview. For full-length movies, it seeks to three dialogue-dense 75-second segments in the interior (~20%, ~50%, ~75% of duration), avoiding intro logos and end credits.
-3. **Speech detection & correlation:** Decimates high-rate audio (48 kHz → 16 kHz) into a streaming voice-band detector (300–3400 Hz Butterworth bandpass + syllabic modulation, 20 ms frames) and runs a two-stage Radix-2 FFT normalized cross-correlation (±60 s, auto-expanding to ±120 s) with parabolic peak refinement.
+2. **Audio-only sampling:** Skips video decoding completely. If a container has multiple audio tracks (e.g. English and Hindi), you can choose which track to analyze and preview. For full-length movies, it seeks to three dialogue-dense 90-second segments in the interior (~20%, ~50%, ~75% of duration), avoiding intro logos and end credits.
+3. **Speech detection & correlation:** Runs a full-rate streaming voice-band detector (300–3400 Hz Butterworth bandpass + syllabic modulation, 20 ms frames, with Center-channel dialogue weighting on 5.1/7.1 tracks) and a two-stage Radix-2 FFT normalized cross-correlation (±60 s, auto-expanding to ±120 s) with parabolic peak refinement.
 4. **Drift check:** Compares offsets across the sampled checkpoints to flag progressive drift (e.g. 23.976 fps vs 25 fps or mismatched cuts).
 5. **10-second audio preview:** Plays a short audio-only clip from the selected audio track synced with live subtitle text and `±0.1s` / `±0.5s` nudge buttons.
 6. **Save `.srt` with ad review:** Optionally saves a shifted (or drift-corrected) `.srt` file via Android SAF. Every flagged ad/credit line is listed with timestamp and reason so you can uncheck any false positive before saving.
@@ -75,3 +75,7 @@ To allow in-place updates between GitHub Releases without uninstalling first, ad
 - Kotlin, Jetpack Compose (Material 3), Coroutines
 - AndroidX Media3 (`media3-exoplayer`, `media3-extractor`, `media3-datasource`)
 - [`org.jellyfin.media3:media3-ffmpeg-decoder`](https://github.com/jellyfin/jellyfin-androidx-media) (GPL-3.0) for software audio decoding
+
+## License
+
+Licensed under the [GNU General Public License v3.0](LICENSE).

@@ -13,15 +13,10 @@ class SpeechActivityDetectorTest {
         val sr = 16_000
         val durationSec = 10
         val totalSamples = sr * durationSec
-        val pcm = FloatArray(totalSamples)
-
-        // Background low-frequency rumble (60 Hz) throughout the entire clip
-        for (i in 0 until totalSamples) {
-            pcm[i] = (0.12 * sin(2.0 * PI * 60.0 * i / sr)).toFloat()
+        val pcm = FloatArray(totalSamples) { i ->
+            (0.12 * sin(2.0 * PI * 60.0 * i / sr)).toFloat()
         }
 
-        // Inject synthetic vocal-band bursts (multi-harmonic 450Hz + 1100Hz + 2100Hz modulated at 5Hz)
-        // Burst 1: 2.0s - 4.0s, Burst 2: 6.0s - 8.0s
         val speechWindows = listOf(2.0 to 4.0, 6.0 to 8.0)
         for ((startSec, endSec) in speechWindows) {
             val s = (startSec * sr).toInt()
@@ -39,7 +34,6 @@ class SpeechActivityDetectorTest {
         val vad = SpeechActivityDetector(sampleRate = sr)
         val env = vad.detectEnvelope(pcm)
 
-        // Average score during speech windows vs non-speech windows
         val fps = SpeechActivityDetector.FRAMES_PER_SECOND
         val speechScore = (2 * fps until 4 * fps).map { env[it] }.average()
         val quietScore = (0 until (1.5 * fps).toInt()).map { env[it] }.average()
@@ -49,12 +43,14 @@ class SpeechActivityDetectorTest {
     }
 
     @Test
-    fun decimates48kHzAudioByThreeAndStillDetectsSpeechAccurately() {
+    fun rejectsHighFrequencyMusicAt48kHzWithoutAliasingIntoVoiceBand() {
         val sr = 48_000
         val durationSec = 8
         val totalSamples = sr * durationSec
+
+        // Loud 14 kHz high-frequency shimmer/cymbal throughout clip (would alias into 2 kHz if naively decimated to 16 kHz!)
         val pcm = FloatArray(totalSamples) { i ->
-            (0.10 * sin(2.0 * PI * 60.0 * i / sr)).toFloat()
+            (0.25 * sin(2.0 * PI * 14_000.0 * i / sr)).toFloat()
         }
 
         // Speech burst from 3.0s to 5.5s
@@ -66,14 +62,52 @@ class SpeechActivityDetectorTest {
         }
 
         val vad = SpeechActivityDetector(sampleRate = sr)
-        org.junit.Assert.assertEquals(3, vad.decimationFactor)
         val env = vad.detectEnvelope(pcm)
 
         val fps = SpeechActivityDetector.FRAMES_PER_SECOND
         val speechScore = (3 * fps until 5 * fps).map { env[it] }.average()
-        val quietScore = (0 until 2 * fps).map { env[it] }.average()
+        val hfOnlyScore = (0 until 2 * fps).map { env[it] }.average()
 
-        assertTrue("Expected high speech score at 48kHz ($speechScore)", speechScore > 0.55)
-        assertTrue("Expected low quiet score at 48kHz ($quietScore)", quietScore < 0.25)
+        assertTrue("Expected strong speech detection at 48kHz ($speechScore)", speechScore > 0.55)
+        assertTrue("Expected 14kHz high-frequency music rejected without aliasing ($hfOnlyScore)", hfOnlyScore < 0.25)
+    }
+
+    @Test
+    fun prioritizesCenterChannelDialogueIn5Point1SurroundAudio() {
+        val sr = 48_000
+        val channels = 6
+        val durationSec = 6
+        val frames = sr * durationSec
+        val pcm16 = ShortArray(frames * channels)
+
+        for (f in 0 until frames) {
+            val t = f.toDouble() / sr
+            val base = f * channels
+            // Loud surround & LFE BGM throughout the entire clip (channels 3, 4, 5)
+            val bgm = (18_000.0 * sin(2.0 * PI * 650.0 * t)).toInt().toShort()
+            pcm16[base + 3] = bgm // LFE
+            pcm16[base + 4] = bgm // BL
+            pcm16[base + 5] = bgm // BR
+
+            // Dialogue ONLY in Center channel (ch 2) between 2.0s and 4.0s
+            if (t in 2.0..4.0) {
+                val mod = 0.55 + 0.45 * sin(2.0 * PI * 5.0 * t)
+                val voice = (14_000.0 * mod * (0.6 * sin(2.0 * PI * 520.0 * t) + 0.4 * sin(2.0 * PI * 1300.0 * t)))
+                    .toInt().toShort()
+                pcm16[base + 2] = voice
+            }
+        }
+
+        val vad = SpeechActivityDetector(sampleRate = sr)
+        val collector = vad.StreamingCollector()
+        collector.pushPcm16(pcm16, pcm16.size, channels)
+        val env = collector.buildEnvelope()
+
+        val fps = SpeechActivityDetector.FRAMES_PER_SECOND
+        val centerDialogueScore = (2 * fps until 4 * fps).map { env[it] }.average()
+        val surroundOnlyScore = (0 until (1.5 * fps).toInt()).map { env[it] }.average()
+
+        assertTrue("Expected clear Center-channel dialogue ($centerDialogueScore)", centerDialogueScore > 0.55)
+        assertTrue("Expected surround-only BGM ignored ($surroundOnlyScore)", surroundOnlyScore < 0.15)
     }
 }

@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a sync inaccuracy, codec issue, or crash
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the issue clearly (e.g. wrong offset, decoding error, crash).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Synctra version
+      placeholder: e.g. v1.2.1 (arm64-v8a)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Android device & OS version
+      placeholder: e.g. Pixel 7, Android 15
+    validations:
+      required: true
+  - type: input
+    id: media
+    attributes:
+      label: Video container, audio codec & subtitle format
+      placeholder: e.g. MKV, AC-3 5.1 (Japanese), .srt
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional details / screenshots
+      description: Offset reported by Synctra vs actual offset, error messages, or screenshots.
+    validations:
+      required: false

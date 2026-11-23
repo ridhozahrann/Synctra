@@ -9,9 +9,10 @@ import kotlin.math.sqrt
 /**
  * Lightweight, streaming, speech-aware Voice Activity Detector (VAD) in pure Kotlin.
  *
- * Automatically decimates high-rate movie audio (e.g., 48 kHz -> 16 kHz, 44.1 kHz -> 22.05 kHz)
- * with a boxcar prefilter before running the 2nd-order Butterworth bandpass filter (300 - 3400 Hz),
- * cutting VAD CPU work by ~3x on standard 48 kHz tracks with zero loss in voice-band accuracy.
+ * Operates at the track's full native sample rate (e.g. 48 kHz / 44.1 kHz) so high-frequency
+ * background music/SFX (8-24 kHz) never aliases into the 300-3400 Hz human vocal band.
+ * For 5.1 / 7.1 surround tracks, weights the Center (FC) dialogue channel over surround/LFE
+ * music channels for cleaner speech isolation.
  *
  * Outputs a smooth [0f, 1f] speech activity envelope at 50 Hz (20 ms per frame).
  */
@@ -25,20 +26,14 @@ class SpeechActivityDetector(
         const val FRAMES_PER_SECOND = 1000 / FRAME_DURATION_MS // 50 Hz
     }
 
-    // Integer decimation factor: 48kHz -> 3 (16kHz), 44.1kHz -> 2 (22.05kHz), 32kHz -> 2 (16kHz), <=24kHz -> 1
-    internal val decimationFactor: Int = (sampleRate / TARGET_SAMPLE_RATE).coerceAtLeast(1)
-    internal val effectiveSampleRate: Double = sampleRate.toDouble() / decimationFactor
-    private val frameSizeSamples: Int = (effectiveSampleRate * frameDurationMs / 1000.0).toInt().coerceAtLeast(1)
+    private val frameSizeSamples: Int = (sampleRate * frameDurationMs / 1000).coerceAtLeast(1)
 
     /**
      * Streaming collector that consumes decoded PCM chunks and keeps only compact per-frame
      * feature values (~12 bytes per 20 ms) instead of raw PCM.
      */
     inner class StreamingCollector {
-        private val bandpass = BiquadBandpass(effectiveSampleRate, lowHz = 300.0, highHz = 3400.0)
-
-        private var decimAccum = 0.0
-        private var decimCount = 0
+        private val bandpass = BiquadBandpass(sampleRate.toDouble(), lowHz = 300.0, highHz = 3400.0)
 
         private var sampleCountInFrame = 0
         private var sumSqFull = 0.0
@@ -46,45 +41,56 @@ class SpeechActivityDetector(
         private var zeroCrossings = 0
         private var prevBandSample = 0.0
 
-        private val bandRmsList = ArrayList<Float>(4096)
-        private val bandRatioList = ArrayList<Float>(4096)
-        private val zcrList = ArrayList<Float>(4096)
+        private val bandRmsList = ArrayList<Float>(5000)
+        private val bandRatioList = ArrayList<Float>(5000)
+        private val zcrList = ArrayList<Float>(5000)
 
         fun pushSamples(monoSamples: FloatArray, count: Int = monoSamples.size) {
             for (i in 0 until count) {
-                feedMonoSample(monoSamples[i].toDouble())
+                processSample(monoSamples[i].toDouble())
             }
         }
 
         fun pushPcm16(pcm16: ShortArray, sampleCount: Int, channels: Int) {
             if (channels <= 0 || sampleCount <= 0) return
             val frames = sampleCount / channels
-            val invScale = 1.0 / (32768.0 * channels)
-            for (f in 0 until frames) {
-                var sum = 0.0
-                val base = f * channels
-                for (c in 0 until channels) {
-                    sum += pcm16[base + c]
+            val invScale = 1.0 / 32768.0
+
+            when {
+                channels == 1 -> {
+                    for (f in 0 until frames) {
+                        processSample(pcm16[f] * invScale)
+                    }
                 }
-                feedMonoSample(sum * invScale)
+                channels == 2 -> {
+                    val halfScale = invScale * 0.5
+                    for (f in 0 until frames) {
+                        val base = f * 2
+                        processSample((pcm16[base] + pcm16[base + 1]) * halfScale)
+                    }
+                }
+                channels >= 6 -> {
+                    // Standard SMPTE 5.1 / 7.1 order: 0=FL, 1=FR, 2=FC (Center dialogue), 3=LFE, 4+=Surrounds
+                    // Prioritize Center channel and front L/R; discard LFE subwoofer and surround BGM.
+                    for (f in 0 until frames) {
+                        val base = f * channels
+                        val mono = (0.60 * pcm16[base + 2] + 0.20 * pcm16[base] + 0.20 * pcm16[base + 1]) * invScale
+                        processSample(mono)
+                    }
+                }
+                else -> {
+                    val normScale = invScale / channels
+                    for (f in 0 until frames) {
+                        var sum = 0.0
+                        val base = f * channels
+                        for (c in 0 until channels) sum += pcm16[base + c]
+                        processSample(sum * normScale)
+                    }
+                }
             }
         }
 
-        private fun feedMonoSample(sample: Double) {
-            if (decimationFactor > 1) {
-                decimAccum += sample
-                decimCount++
-                if (decimCount < decimationFactor) return
-                val downsampled = decimAccum / decimationFactor
-                decimAccum = 0.0
-                decimCount = 0
-                processDecimatedSample(downsampled)
-            } else {
-                processDecimatedSample(sample)
-            }
-        }
-
-        private fun processDecimatedSample(x: Double) {
+        private fun processSample(x: Double) {
             val y = bandpass.process(x)
             sumSqFull += x * x
             sumSqBand += y * y
@@ -153,7 +159,6 @@ class SpeechActivityDetector(
 
         val modWindow = 10
         val rawScore = FloatArray(n)
-        val effSr = effectiveSampleRate.toFloat()
 
         for (i in 0 until n) {
             val energyNorm = ((logEnergy[i] - (noiseFloor + 0.22f * dynamicRange)) / (0.58f * dynamicRange))
@@ -161,7 +166,7 @@ class SpeechActivityDetector(
 
             val ratioScore = ((bandRatio[i] - 0.18f) / 0.37f).coerceIn(0f, 1f)
 
-            val zcrHz = zcr[i] * effSr * 0.5f
+            val zcrHz = zcr[i] * sampleRate * 0.5f
             val zcrScore = when {
                 zcrHz < 120f -> 0.25f
                 zcrHz in 120f..3200f -> 1.0f

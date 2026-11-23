@@ -9,7 +9,7 @@ import com.synctra.app.domain.model.SubtitleCue
  */
 object WindowPlanner {
 
-    private const val DEFAULT_WINDOW_MS = 75_000L // 75 seconds per sample
+    private const val DEFAULT_WINDOW_MS = 90_000L // 90 seconds per sample
 
     fun planWindows(
         mediaDurationMs: Long,
