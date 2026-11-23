@@ -1,6 +1,16 @@
+<p align="left">
+  <img src="assets/logo.svg" width="84" height="84" alt="Synctra logo" />
+</p>
+
 # Synctra
 
 Offline Android app that calculates the exact timing offset (in seconds and milliseconds) between a movie file and an external subtitle file, with optional synced `.srt` export.
+
+<p align="left">
+  <a href="https://github.com/ridhozahrann/Synctra/releases/latest">
+    <img src="assets/download-button.svg" height="44" alt="Download Latest APK" />
+  </a>
+</p>
 
 Instead of guessing subtitle delay values by trial and error inside VLC, MX Player, or Nova Video Player, Synctra samples the movie's audio track, matches spoken dialogue against the subtitle timeline, and tells you the exact delay to enter.
 
@@ -30,7 +40,7 @@ Instead of guessing subtitle delay values by trial and error inside VLC, MX Play
 
 ## Download
 
-Grab the latest signed APK from [Releases](https://github.com/ridhozahrann/Synctra/releases):
+Get the latest signed APK from [Releases](https://github.com/ridhozahrann/Synctra/releases/latest):
 - `Synctra-vX.Y.Z-arm64-v8a.apk` (~3 MB, recommended for modern 64-bit Android devices)
 - `Synctra-vX.Y.Z-universal.apk` (~7 MB, all ABIs)
 
