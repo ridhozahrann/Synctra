@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.1
+- Fixed the bottom "Choose location & save" button in the Save `.srt` review sheet being hidden behind the system navigation bar by rendering `ExportSrtSheet` as an in-window overlay with `BackHandler` and direct Activity `statusBarsPadding` / `navigationBarsPadding`.
+- Configured `enableEdgeToEdge` with dark transparent system bar styles so status and navigation bars match the dark UI even when the device is in Light Mode.
+- Made the export confirmation button use `heightIn(min = 48.dp)` to prevent label clipping under large accessibility font scales.
+
 ## v1.4.0
 - Added automatic multi-charset detection for legacy subtitle encodings (`Shift_JIS`, `EUC-KR`, `GBK`, `Big5`, `windows-1251`, `windows-1256`, `windows-1252`) and a collapsible encoding picker with a 3-line live preview.
 - Stripped ASS/SSA vector drawing segments (`\p1`..`\pN` until `\p0`) so typesetting shapes no longer pollute dialogue cues, and skipped WebVTT `NOTE` comment blocks cleanly.

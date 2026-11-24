@@ -1,5 +1,6 @@
 package com.synctra.app.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -45,15 +47,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.FlaggedSubtitleCue
 import com.synctra.app.domain.model.SyncResult
@@ -68,9 +67,10 @@ data class ExportSrtOptions(
 /**
  * Bottom-anchored review sheet shown before saving a synced `.srt` file.
  *
- * Uses a dedicated bottom-anchored [Dialog] with a single unified [LazyColumn] instead of
- * Material 3's draggable ModalBottomSheet so vertical scrolling never conflicts with
- * sheet drag-to-dismiss gestures.
+ * Rendered as an in-window full-screen overlay (with [BackHandler]) rather than a separate
+ * Compose `Dialog` window so edge-to-edge Activity window insets (`statusBarsPadding` and
+ * `navigationBarsPadding`) are always reported accurately and the bottom CTA is never hidden
+ * behind the system navigation bar.
  */
 @Composable
 fun ExportSrtSheet(
@@ -83,6 +83,8 @@ fun ExportSrtSheet(
     onDismiss: () -> Unit,
     onConfirmSave: (ExportSrtOptions) -> Unit,
 ) {
+    BackHandler(onBack = onDismiss)
+
     // Default: all flagged ads/credits checked for removal; SDH unchecked (kept) by default
     var removedAdIndices by remember(flaggedAds) {
         mutableStateOf(flaggedAds.map { it.cue.index }.toSet())
@@ -97,33 +99,36 @@ fun ExportSrtSheet(
     val allAdsSelected = flaggedAds.isNotEmpty() && removedAdIndices.size == flaggedAds.size
 
     val listState = rememberLazyListState()
-    val maxSheetHeight = (LocalConfiguration.current.screenHeightDp * 0.84f).dp
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-        ),
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            // Scrim behind sheet — tapping outside dismisses
-            Box(
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Scrim behind sheet — tapping outside dismisses
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.65f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss,
+                ),
+        )
+
+        // Bound sheet height to the real viewport below the status bar so header + footer always fit
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(top = 24.dp),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Surface(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.65f))
+                    .fillMaxWidth()
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = onDismiss,
+                        onClick = {},
                     ),
-            )
-
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .heightIn(max = maxSheetHeight),
                 shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
                 color = SynctraColors.Surface,
                 border = BorderStroke(1.dp, SynctraColors.Hairline),
@@ -371,7 +376,8 @@ fun ExportSrtSheet(
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(48.dp),
+                                .heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = SynctraColors.ActionBg,

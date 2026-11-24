@@ -120,13 +120,14 @@ fun SynctraScreen(
         }
     }
 
-    Scaffold(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(SynctraColors.Background),
-        containerColor = SynctraColors.Background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-    ) { innerPadding ->
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(SynctraColors.Background),
+            containerColor = SynctraColors.Background,
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+        ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -412,22 +413,23 @@ fun SynctraScreen(
         }
     }
 
-    // Export .srt review bottom sheet
-    if (showExportSheet && state.result != null && state.parsedSubtitle != null) {
-        val cleaned = state.cleanedPreviewStats
-        ExportSrtSheet(
-            strings = strings,
-            totalCueCount = state.parsedSubtitle!!.allCues.size,
-            effectiveOffsetMs = state.effectiveOffsetMs,
-            result = state.result!!,
-            flaggedAds = cleaned?.flaggedAdOrCreditCues.orEmpty(),
-            flaggedSdh = cleaned?.flaggedSdhCues.orEmpty(),
-            onDismiss = { showExportSheet = false },
-            onConfirmSave = { options ->
-                showExportSheet = false
-                viewModel.prepareExport(options)
-                createSrtLauncher.launch(viewModel.suggestedExportFileName())
-            },
-        )
+        // Export .srt review bottom sheet (in-window overlay so Activity system bar insets always apply)
+        if (showExportSheet && state.result != null && state.parsedSubtitle != null) {
+            val cleaned = state.cleanedPreviewStats
+            ExportSrtSheet(
+                strings = strings,
+                totalCueCount = state.parsedSubtitle!!.allCues.size,
+                effectiveOffsetMs = state.effectiveOffsetMs,
+                result = state.result!!,
+                flaggedAds = cleaned?.flaggedAdOrCreditCues.orEmpty(),
+                flaggedSdh = cleaned?.flaggedSdhCues.orEmpty(),
+                onDismiss = { showExportSheet = false },
+                onConfirmSave = { options ->
+                    showExportSheet = false
+                    viewModel.prepareExport(options)
+                    createSrtLauncher.launch(viewModel.suggestedExportFileName())
+                },
+            )
+        }
     }
 }
