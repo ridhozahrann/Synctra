@@ -22,5 +22,5 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests & verify release compilation
-        run: ./gradlew :app:testDebugUnitTest :app:compileReleaseKotlin
+      - name: Run unit tests, lint & verify release compilation
+        run: ./gradlew :app:testDebugUnitTest :app:compileReleaseKotlin :app:lintRelease

@@ -104,6 +104,17 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" --clobber
           else
+            ARM64_MB=$(awk -v b="$(stat -c%s "$ARM64_APK")" 'BEGIN { printf "%.1f MB", b / 1048576 }')
+            UNIV_MB=$(awk -v b="$(stat -c%s "$UNIVERSAL_APK")" 'BEGIN { printf "%.1f MB", b / 1048576 }')
+            CHANGELOG_SECTION=$(awk -v tag="## $TAG_NAME" '
+              $0 == tag { found=1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md)
+            if [ -z "$CHANGELOG_SECTION" ]; then
+              CHANGELOG_SECTION="- See CHANGELOG.md for details."
+            fi
+
             NOTES_FILE="$RUNNER_TEMP/release-notes.md"
             cat <<EOF > "$NOTES_FILE"
           ## Synctra $TAG_NAME
@@ -111,14 +122,11 @@ jobs:
           Offline Android subtitle sync checker.
 
           ### Downloads
-          - **\`Synctra-${TAG_NAME}-arm64-v8a.apk\`** (~2.9 MB) — recommended for almost all modern 64-bit Android phones.
-          - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7.2 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
+          - **\`Synctra-${TAG_NAME}-arm64-v8a.apk\`** ($ARM64_MB) — recommended for almost all modern 64-bit Android phones.
+          - **\`Synctra-${TAG_NAME}-universal.apk\`** ($UNIV_MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
           ### What's new in $TAG_NAME
-          - Fixed false auto-enabled FPS drift stretch on 2-checkpoint / scene-cut results that could warp exported \`.srt\` timestamps out of sync
-          - Made cinema FPS matching outlier-resistant using cluster scoring so a single noisy checkpoint cannot trigger a false FPS stretch
-          - Upgraded offset consensus to squared-confidence cluster voting (strongest peak wins when checkpoints disagree, instead of weak medians)
-          - Added lightweight joint multi-window pooled correlation (~2–5 ms CPU, zero extra audio decoding) for cleaner accuracy and round-trip consistency on noisy/BGM-heavy movies
+          $CHANGELOG_SECTION
           EOF
             gh release create "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" \
               --title "Synctra $TAG_NAME" \

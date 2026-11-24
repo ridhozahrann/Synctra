@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -27,6 +26,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -161,15 +162,30 @@ fun AudioPreviewCard(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(if (previewState.isPlaying) SynctraColors.SurfaceSubtle else SynctraColors.ActionBg)
-                        .clickable(onClick = onTogglePlay),
+                        .clickable(onClick = onTogglePlay)
+                        .semantics {
+                            contentDescription = if (previewState.isPlaying) {
+                                strings.stopContentDesc
+                            } else {
+                                strings.playContentDesc
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = if (previewState.isPlaying) Icons.Filled.Close else Icons.Filled.PlayArrow,
-                        contentDescription = if (previewState.isPlaying) strings.stopContentDesc else strings.playContentDesc,
-                        tint = if (previewState.isPlaying) SynctraColors.InkPrimary else SynctraColors.ActionInk,
-                        modifier = Modifier.size(20.dp),
-                    )
+                    if (previewState.isPlaying) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(SynctraColors.InkPrimary, RoundedCornerShape(2.dp)),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            tint = SynctraColors.ActionInk,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.width(12.dp))
