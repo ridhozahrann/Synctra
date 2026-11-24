@@ -24,6 +24,101 @@ object FftCrossCorrelator {
     private const val COARSE_DECIMATION = 5 // 100 ms coarse bins
 
     /**
+     * Reusable precomputed audio window state shared across 1.0x correlation, FPS candidates,
+     * and joint pooled correlation so audio centering, downsampling, and coarse FFT are never
+     * recomputed for the same extracted window.
+     */
+    internal class PreparedAudioWindow(
+        val window: SampleWindow,
+        val audioEnvelope: FloatArray,
+        val speechRatio: Float,
+        val aCentered: DoubleArray,
+        val normA: Double,
+        val coarseAudio: FloatArray,
+        val coarseACentered: DoubleArray,
+        val coarseNormA: Double,
+    ) {
+        private var cachedFftSize: Int = -1
+        private var cachedCoarseFftRe: DoubleArray? = null
+        private var cachedCoarseFftIm: DoubleArray? = null
+
+        fun getCoarseFft(fftSize: Int): Pair<DoubleArray, DoubleArray> {
+            val reCached = cachedCoarseFftRe
+            val imCached = cachedCoarseFftIm
+            if (cachedFftSize == fftSize && reCached != null && imCached != null) {
+                return reCached to imCached
+            }
+            val aRe = DoubleArray(fftSize)
+            val aIm = DoubleArray(fftSize)
+            for (i in coarseACentered.indices) aRe[i] = coarseACentered[i]
+            fft(aRe, aIm, inverse = false)
+            cachedFftSize = fftSize
+            cachedCoarseFftRe = aRe
+            cachedCoarseFftIm = aIm
+            return aRe to aIm
+        }
+    }
+
+    internal class SubEnvelopePrefix(
+        val prefixS: DoubleArray,
+        val prefixS2: DoubleArray,
+    )
+
+    internal fun prepareAudioWindow(
+        window: SampleWindow,
+        audioEnvelope: FloatArray,
+    ): PreparedAudioWindow {
+        val n = audioEnvelope.size
+        val speechRatio = if (n > 0) {
+            audioEnvelope.count { it >= 0.45f }.toFloat() / n
+        } else {
+            0f
+        }
+
+        val (aCentered, normA) = centerAndNorm(audioEnvelope)
+        val coarseAudio = downsample(audioEnvelope, COARSE_DECIMATION)
+        val (coarseACentered, coarseNormA) = centerAndNorm(coarseAudio)
+
+        return PreparedAudioWindow(
+            window = window,
+            audioEnvelope = audioEnvelope,
+            speechRatio = speechRatio,
+            aCentered = aCentered,
+            normA = normA,
+            coarseAudio = coarseAudio,
+            coarseACentered = coarseACentered,
+            coarseNormA = coarseNormA,
+        )
+    }
+
+    private fun centerAndNorm(signal: FloatArray): Pair<DoubleArray, Double> {
+        val n = signal.size
+        if (n == 0) return DoubleArray(0) to 0.0
+        var sum = 0.0
+        for (v in signal) sum += v
+        val mean = sum / n
+        var energy = 0.0
+        val centered = DoubleArray(n) { i ->
+            val d = signal[i] - mean
+            energy += d * d
+            d
+        }
+        return centered to sqrt(energy)
+    }
+
+    internal fun buildSubPrefix(subPadded: FloatArray): SubEnvelopePrefix {
+        val m = subPadded.size
+        val prefixS = DoubleArray(m + 1)
+        val prefixS2 = DoubleArray(m + 1)
+        for (i in 0 until m) {
+            val v = subPadded[i].toDouble()
+            prefixS[i + 1] = prefixS[i] + v
+            prefixS2[i + 1] = prefixS2[i] + v * v
+        }
+        return SubEnvelopePrefix(prefixS, prefixS2)
+    }
+
+    /**
      * Correlates an extracted audio speech-activity envelope (starting at [window.startMs])
      * against cleaned subtitle cues within `[-maxLagMs, +maxLagMs]`.
      */
@@ -32,7 +127,19 @@ object FftCrossCorrelator {
         audioEnvelope: FloatArray,
         dialogueCues: List<SubtitleCue>,
         maxLagMs: Long = 60_000L,
+    ): WindowSyncResult = correlateWindow(
+        prepared = prepareAudioWindow(window, audioEnvelope),
+        dialogueCues = dialogueCues,
+        maxLagMs = maxLagMs,
+    )
+
+    internal fun correlateWindow(
+        prepared: PreparedAudioWindow,
+        dialogueCues: List<SubtitleCue>,
+        maxLagMs: Long = 60_000L,
     ): WindowSyncResult {
+        val window = prepared.window
+        val audioEnvelope = prepared.audioEnvelope
         if (audioEnvelope.size < 25 || dialogueCues.isEmpty()) {
             return WindowSyncResult(
                 window = window,
@@ -43,7 +150,7 @@ object FftCrossCorrelator {
             )
         }
 
-        val speechRatio = audioEnvelope.count { it >= 0.45f }.toFloat() / audioEnvelope.size
+        val speechRatio = prepared.speechRatio
 
         // Subtitle slice covers [window.startMs - maxLagMs, window.endMs + maxLagMs]
         // so that for any lag L in [-maxLagMs, +maxLagMs]:
@@ -71,13 +178,12 @@ object FftCrossCorrelator {
             )
         }
 
-        // Stage 1: Coarse FFT search at 100ms bins
-        val coarseAudio = downsample(audioEnvelope, COARSE_DECIMATION)
+        // Stage 1: Coarse FFT search at 100ms bins (reusing cached coarse audio FFT)
         val coarseSub = downsample(subEnvelope, COARSE_DECIMATION)
         val coarseMaxLag = (maxLagFrames / COARSE_DECIMATION).coerceAtLeast(1)
 
         val coarseCorr = computeNormalizedFftCorrelation(
-            audio = coarseAudio,
+            prepared = prepared,
             subPadded = coarseSub,
             maxLagBins = coarseMaxLag,
         )
@@ -91,38 +197,56 @@ object FftCrossCorrelator {
         )
 
         // Stage 2: Fine exact Pearson search at 20ms resolution around each coarse peak
+        val subPrefix = buildSubPrefix(subEnvelope)
         var bestFineLagFrames = 0
         var bestFineScore = -2.0
+        var bestYMinus = Double.NaN
+        var bestYPlus = Double.NaN
         val expandedRadius = 50 // +/- 1.0s around each coarse peak
-
-        val fineScoresAroundBest = HashMap<Int, Double>()
+        val peakScores = DoubleArray(2 * expandedRadius + 1)
 
         for (coarseLag in candidateCoarseLags) {
             val centerFine = coarseLag * COARSE_DECIMATION
             val lo = (centerFine - expandedRadius).coerceAtLeast(-maxLagFrames)
             val hi = (centerFine + expandedRadius).coerceAtMost(maxLagFrames)
+            var peakBestLag = lo
+            var peakBestScore = -2.0
 
             for (lag in lo..hi) {
-                val score = exactPearsonAtLag(
-                    audio = audioEnvelope,
+                val score = fastPearsonAtLag(
+                    preparedAudio = prepared,
                     subPadded = subEnvelope,
+                    subPrefix = subPrefix,
                     maxLagFrames = maxLagFrames,
                     lagFrames = lag,
                 )
-                fineScoresAroundBest[lag] = score
-                if (score > bestFineScore) {
-                    bestFineScore = score
-                    bestFineLagFrames = lag
+                peakScores[lag - lo] = score
+                if (score > peakBestScore) {
+                    peakBestScore = score
+                    peakBestLag = lag
                 }
+            }
+
+            if (peakBestScore > bestFineScore) {
+                bestFineScore = peakBestScore
+                bestFineLagFrames = peakBestLag
+                bestYMinus = if (peakBestLag > lo) peakScores[peakBestLag - 1 - lo] else Double.NaN
+                bestYPlus = if (peakBestLag < hi) peakScores[peakBestLag + 1 - lo] else Double.NaN
             }
         }
 
         // Parabolic sub-frame interpolation around the best fine peak for ~10ms precision
-        val yMinus = fineScoresAroundBest[bestFineLagFrames - 1]
-            ?: exactPearsonAtLag(audioEnvelope, subEnvelope, maxLagFrames, (bestFineLagFrames - 1).coerceAtLeast(-maxLagFrames))
+        val yMinus = if (!bestYMinus.isNaN()) {
+            bestYMinus
+        } else {
+            fastPearsonAtLag(prepared, subEnvelope, subPrefix, maxLagFrames, (bestFineLagFrames - 1).coerceAtLeast(-maxLagFrames))
+        }
         val yZero = bestFineScore
-        val yPlus = fineScoresAroundBest[bestFineLagFrames + 1]
-            ?: exactPearsonAtLag(audioEnvelope, subEnvelope, maxLagFrames, (bestFineLagFrames + 1).coerceAtMost(maxLagFrames))
+        val yPlus = if (!bestYPlus.isNaN()) {
+            bestYPlus
+        } else {
+            fastPearsonAtLag(prepared, subEnvelope, subPrefix, maxLagFrames, (bestFineLagFrames + 1).coerceAtMost(maxLagFrames))
+        }
 
         val denom = (yMinus - 2.0 * yZero + yPlus)
         val delta = if (abs(denom) > 1e-9 && yZero >= yMinus && yZero >= yPlus) {
@@ -181,27 +305,36 @@ object FftCrossCorrelator {
         windows: List<WindowAudioInput>,
         dialogueCues: List<SubtitleCue>,
         maxLagMs: Long = 60_000L,
+    ): List<WindowSyncResult>? = correlateJointlyPrepared(
+        preparedWindows = windows.map { prepareAudioWindow(it.window, it.speechEnvelope) },
+        dialogueCues = dialogueCues,
+        maxLagMs = maxLagMs,
+    )
+
+    internal fun correlateJointlyPrepared(
+        preparedWindows: List<PreparedAudioWindow>,
+        dialogueCues: List<SubtitleCue>,
+        maxLagMs: Long = 60_000L,
     ): List<WindowSyncResult>? {
-        if (windows.size < 2 || dialogueCues.isEmpty()) return null
+        if (preparedWindows.size < 2 || dialogueCues.isEmpty()) return null
 
         val maxLagFrames = (maxLagMs / FRAME_MS).toInt().coerceAtLeast(1)
         val coarseMaxLag = (maxLagFrames / COARSE_DECIMATION).coerceAtLeast(1)
         val coarseLen = 2 * coarseMaxLag + 1
 
-        data class PreparedWindow(
-            val input: WindowAudioInput,
-            val speechRatio: Float,
+        data class JointWindowState(
+            val audio: PreparedAudioWindow,
             val weight: Double,
             val subEnvelope: FloatArray,
+            val subPrefix: SubEnvelopePrefix,
             val coarseCorr: DoubleArray,
         )
 
-        val prepared = ArrayList<PreparedWindow>(windows.size)
-        for (input in windows) {
-            val env = input.speechEnvelope
-            if (env.size < 25) continue
-            val speechRatio = env.count { it >= 0.45f }.toFloat() / env.size
-            val subOriginMs = input.window.startMs - maxLagFrames.toLong() * FRAME_MS
+        val prepared = ArrayList<JointWindowState>(preparedWindows.size)
+        for (audio in preparedWindows) {
+            val env = audio.audioEnvelope
+            if (env.size < 25 || audio.normA <= 1e-9) continue
+            val subOriginMs = audio.window.startMs - maxLagFrames.toLong() * FRAME_MS
             val subTotalFrames = env.size + 2 * maxLagFrames
             val subEnv = buildSubtitleEnvelope(dialogueCues, subOriginMs, subTotalFrames, FRAME_MS)
 
@@ -209,11 +342,11 @@ object FftCrossCorrelator {
             for (v in subEnv) subSum += v
             if (subSum < 5.0) continue
 
-            val coarseAudio = downsample(env, COARSE_DECIMATION)
             val coarseSub = downsample(subEnv, COARSE_DECIMATION)
-            val coarseCorr = computeNormalizedFftCorrelation(coarseAudio, coarseSub, coarseMaxLag)
-            val weight = speechRatio.coerceIn(0.08f, 0.65f).toDouble()
-            prepared.add(PreparedWindow(input, speechRatio, weight, subEnv, coarseCorr))
+            val coarseCorr = computeNormalizedFftCorrelation(audio, coarseSub, coarseMaxLag)
+            val subPrefix = buildSubPrefix(subEnv)
+            val weight = audio.speechRatio.coerceIn(0.08f, 0.65f).toDouble()
+            prepared.add(JointWindowState(audio, weight, subEnv, subPrefix, coarseCorr))
         }
 
         if (prepared.size < 2) return null
@@ -245,7 +378,7 @@ object FftCrossCorrelator {
             for (lag in lo..hi) {
                 var sum = 0.0
                 for (pw in prepared) {
-                    val s = exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, lag)
+                    val s = fastPearsonAtLag(pw.audio, pw.subEnvelope, pw.subPrefix, maxLagFrames, lag)
                     sum += s * pw.weight
                 }
                 val score = sum / totalWeight
@@ -281,8 +414,9 @@ object FftCrossCorrelator {
             return null
         }
 
-        // Locally refine each window within +/- 300ms around the pooled lag
+        // Locally refine each window within +/- 300ms around the pooled lag using a reusable flat array
         val localRadius = 15 // +/- 300ms
+        val localScores = DoubleArray(2 * localRadius + 1)
         var supportingWindows = 0
         val resultsByIndex = HashMap<Int, WindowSyncResult>(prepared.size)
 
@@ -291,22 +425,27 @@ object FftCrossCorrelator {
             val hi = (bestJointLag + localRadius).coerceAtMost(maxLagFrames)
             var bestLocalLag = bestJointLag
             var bestLocalScore = -2.0
-            val localScores = HashMap<Int, Double>(hi - lo + 1)
 
             for (lag in lo..hi) {
-                val sc = exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, lag)
-                localScores[lag] = sc
+                val sc = fastPearsonAtLag(pw.audio, pw.subEnvelope, pw.subPrefix, maxLagFrames, lag)
+                localScores[lag - lo] = sc
                 if (sc > bestLocalScore) {
                     bestLocalScore = sc
                     bestLocalLag = lag
                 }
             }
 
-            val yMinus = localScores[bestLocalLag - 1]
-                ?: exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, (bestLocalLag - 1).coerceAtLeast(-maxLagFrames))
+            val yMinus = if (bestLocalLag > lo) {
+                localScores[bestLocalLag - 1 - lo]
+            } else {
+                fastPearsonAtLag(pw.audio, pw.subEnvelope, pw.subPrefix, maxLagFrames, (bestLocalLag - 1).coerceAtLeast(-maxLagFrames))
+            }
             val yZero = bestLocalScore
-            val yPlus = localScores[bestLocalLag + 1]
-                ?: exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, (bestLocalLag + 1).coerceAtMost(maxLagFrames))
+            val yPlus = if (bestLocalLag < hi) {
+                localScores[bestLocalLag + 1 - lo]
+            } else {
+                fastPearsonAtLag(pw.audio, pw.subEnvelope, pw.subPrefix, maxLagFrames, (bestLocalLag + 1).coerceAtMost(maxLagFrames))
+            }
             val denom = yMinus - 2.0 * yZero + yPlus
             val delta = if (abs(denom) > 1e-9 && yZero >= yMinus && yZero >= yPlus) {
                 (0.5 * (yMinus - yPlus) / denom).coerceIn(-0.5, 0.5)
@@ -341,24 +480,24 @@ object FftCrossCorrelator {
             val promTerm = ((effectiveProm - 1.8) / 4.2).coerceIn(0.0, 1.0)
             val conf = (0.45 * corrTerm + 0.55 * promTerm).toFloat().coerceIn(0f, 0.92f)
 
-            resultsByIndex[pw.input.window.index] = WindowSyncResult(
-                window = pw.input.window,
+            resultsByIndex[pw.audio.window.index] = WindowSyncResult(
+                window = pw.audio.window,
                 offsetMs = refinedMs,
                 confidence = conf,
                 peakProminence = effectiveProm,
-                speechRatio = pw.speechRatio,
+                speechRatio = pw.audio.speechRatio,
             )
         }
 
         if (supportingWindows < 2) return null
 
-        return windows.map { input ->
-            resultsByIndex[input.window.index] ?: WindowSyncResult(
-                window = input.window,
+        return preparedWindows.map { audio ->
+            resultsByIndex[audio.window.index] ?: WindowSyncResult(
+                window = audio.window,
                 offsetMs = bestJointLag.toLong() * FRAME_MS,
                 confidence = 0f,
                 peakProminence = 0f,
-                speechRatio = 0f,
+                speechRatio = audio.speechRatio,
             )
         }
     }
@@ -395,6 +534,36 @@ object FftCrossCorrelator {
             for (k in 0 until factor) sum += input[base + k]
             sum / factor
         }
+    }
+
+    /**
+     * Fast exact Pearson correlation using pre-centered audio and O(1) prefix sums of [subPadded].
+     * Algebraically identical to [exactPearsonAtLag] because zero-mean `aCentered` satisfies
+     * `dot(aCentered, sub - meanS) == dot(aCentered, sub)`.
+     */
+    internal fun fastPearsonAtLag(
+        preparedAudio: PreparedAudioWindow,
+        subPadded: FloatArray,
+        subPrefix: SubEnvelopePrefix,
+        maxLagFrames: Int,
+        lagFrames: Int,
+    ): Double {
+        val aCentered = preparedAudio.aCentered
+        val n = aCentered.size
+        val subStart = maxLagFrames - lagFrames
+        if (subStart < 0 || subStart + n > subPadded.size) return -1.0
+        if (preparedAudio.normA <= 1e-9) return 0.0
+
+        var num = 0.0
+        for (i in 0 until n) {
+            num += aCentered[i] * subPadded[subStart + i]
+        }
+
+        val sumS = subPrefix.prefixS[subStart + n] - subPrefix.prefixS[subStart]
+        val sumS2 = subPrefix.prefixS2[subStart + n] - subPrefix.prefixS2[subStart]
+        val varS = (sumS2 - (sumS * sumS) / n).coerceAtLeast(0.0)
+        val denom = preparedAudio.normA * sqrt(varS)
+        return if (denom > 1e-9) (num / denom).coerceIn(-1.0, 1.0) else 0.0
     }
 
     /**
@@ -437,6 +606,56 @@ object FftCrossCorrelator {
         }
         val denom = sqrt(denA * denS)
         return if (denom > 1e-9) num / denom else 0.0
+    }
+
+    /**
+     * Computes normalized cross-correlation for all lags in `[-maxLagBins, +maxLagBins]`
+     * in O(N log N) via Radix-2 FFT, reusing the cached coarse audio FFT from [prepared].
+     */
+    private fun computeNormalizedFftCorrelation(
+        prepared: PreparedAudioWindow,
+        subPadded: FloatArray,
+        maxLagBins: Int,
+    ): DoubleArray {
+        val n = prepared.coarseAudio.size
+        val m = subPadded.size
+        val outLen = 2 * maxLagBins + 1
+        if (n == 0 || m < n || prepared.coarseNormA <= 1e-9) return DoubleArray(outLen)
+
+        val prefix = buildSubPrefix(subPadded)
+        val fftSize = nextPowerOfTwo(m + n)
+        val (aRe, aIm) = prepared.getCoarseFft(fftSize)
+
+        val sRe = DoubleArray(fftSize)
+        val sIm = DoubleArray(fftSize)
+        for (i in 0 until m) sRe[i] = subPadded[i].toDouble()
+        fft(sRe, sIm, inverse = false)
+
+        // Multiply S * conj(A)
+        for (i in 0 until fftSize) {
+            val sr = sRe[i]
+            val si = sIm[i]
+            val ar = aRe[i]
+            val ai = aIm[i]
+            sRe[i] = sr * ar + si * ai
+            sIm[i] = si * ar - sr * ai
+        }
+        fft(sRe, sIm, inverse = true)
+
+        val result = DoubleArray(outLen)
+        val normA = prepared.coarseNormA
+        for (lag in -maxLagBins..maxLagBins) {
+            val s = maxLagBins - lag
+            if (s < 0 || s + n > m) continue
+
+            val dot = sRe[s]
+            val sumS = prefix.prefixS[s + n] - prefix.prefixS[s]
+            val sumS2 = prefix.prefixS2[s + n] - prefix.prefixS2[s]
+            val varS = (sumS2 - (sumS * sumS) / n).coerceAtLeast(0.0)
+            val denom = normA * sqrt(varS)
+            result[lag + maxLagBins] = if (denom > 1e-9) (dot / denom).coerceIn(-1.0, 1.0) else 0.0
+        }
+        return result
     }
 
     /**

@@ -32,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -69,9 +71,20 @@ fun SynctraScreen(
     val strings = remember(state.language) { AppStringsProvider.get(state.language) }
     val snackbarHostState = remember { SnackbarHostState() }
     val clipboard = LocalClipboardManager.current
+    val view = LocalView.current
     val scope = rememberCoroutineScope()
 
     var showExportSheet by remember { mutableStateOf(false) }
+
+    // Keep screen awake during active audio extraction/correlation so long files on slow storage don't sleep
+    DisposableEffect(view, state.isAnalyzing) {
+        if (state.isAnalyzing) {
+            view.keepScreenOn = true
+        }
+        onDispose {
+            view.keepScreenOn = false
+        }
+    }
 
     // Pause audio preview automatically if user switches apps or presses Home
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {

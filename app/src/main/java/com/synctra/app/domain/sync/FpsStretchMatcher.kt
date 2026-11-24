@@ -85,15 +85,21 @@ object FpsStretchMatcher {
             return SpeedMatchResult(emptyList())
         }
 
+        // Prepare audio envelopes once so centering, downsampling, and coarse FFT are reused
+        // across 1.0x correlation, 120s expansion, all 6 FPS candidates, and joint pooling.
+        val preparedWindows = windows.map {
+            FftCrossCorrelator.prepareAudioWindow(it.window, it.speechEnvelope)
+        }
+
         // 1. Standard 1.0x correlation within +/- 60s
         var activeMaxLagMs = 60_000L
-        var baseResults = correlateAll(windows, dialogueCues, maxLagMs = activeMaxLagMs)
+        var baseResults = correlateAll(preparedWindows, dialogueCues, maxLagMs = activeMaxLagMs)
 
         // Expand to +/- 120s if initial confidence is weak
         val maxConf60 = baseResults.maxOfOrNull { it.confidence } ?: 0f
         if (maxConf60 < 0.35f) {
             onExpandingSearch()
-            val wideResults = correlateAll(windows, dialogueCues, maxLagMs = 120_000L)
+            val wideResults = correlateAll(preparedWindows, dialogueCues, maxLagMs = 120_000L)
             val wideMaxConf = wideResults.maxOfOrNull { it.confidence } ?: 0f
             if (wideMaxConf > maxConf60 + 0.05f) {
                 baseResults = wideResults
@@ -119,7 +125,7 @@ object FpsStretchMatcher {
             return SpeedMatchResult(windowResults = baseResults)
         }
 
-        // 2. Test standard cinema FPS ratios on the already-extracted envelopes
+        // 2. Test standard cinema FPS ratios on the already-extracted envelopes (reusing cached audio FFT)
         var bestCandidate: CinemaFpsCandidate? = null
         var bestStretchedResults: List<WindowSyncResult>? = null
         var bestCandCluster: OffsetCluster? = null
@@ -127,7 +133,7 @@ object FpsStretchMatcher {
 
         for (candidate in STANDARD_FPS_CANDIDATES) {
             val stretchedCues = scaleCues(dialogueCues, candidate.speedRatio)
-            val candResults = correlateAll(windows, stretchedCues, maxLagMs = 60_000L)
+            val candResults = correlateAll(preparedWindows, stretchedCues, maxLagMs = 60_000L)
             val candQuality = scoreWindowSet(candResults)
 
             val isTinyRatio = candidate.causeKey == DriftCauseKey.FPS_23976_VS_24
@@ -182,8 +188,8 @@ object FpsStretchMatcher {
         // correlateJointly itself requires >= 2 windows to genuinely support the shared lag with
         // high pooled prominence, so true multi-cut movies safely return null.
         if (baseCluster400.size < 2) {
-            val jointResults = FftCrossCorrelator.correlateJointly(
-                windows = windows,
+            val jointResults = FftCrossCorrelator.correlateJointlyPrepared(
+                preparedWindows = preparedWindows,
                 dialogueCues = dialogueCues,
                 maxLagMs = activeMaxLagMs,
             )
@@ -199,13 +205,12 @@ object FpsStretchMatcher {
     }
 
     private fun correlateAll(
-        windows: List<WindowAudioInput>,
+        preparedWindows: List<FftCrossCorrelator.PreparedAudioWindow>,
         cues: List<SubtitleCue>,
         maxLagMs: Long,
-    ): List<WindowSyncResult> = windows.map { input ->
+    ): List<WindowSyncResult> = preparedWindows.map { prepared ->
         FftCrossCorrelator.correlateWindow(
-            window = input.window,
-            audioEnvelope = input.speechEnvelope,
+            prepared = prepared,
             dialogueCues = cues,
             maxLagMs = maxLagMs,
         )
