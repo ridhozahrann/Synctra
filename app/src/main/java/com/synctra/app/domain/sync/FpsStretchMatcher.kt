@@ -24,6 +24,8 @@ data class SpeedMatchResult(
     val matchedFpsCandidate: CinemaFpsCandidate? = null,
     /** Consensus constant base offset `b` in `t_audio = t_sub * speedRatio + b` when [matchedFpsCandidate] != null. */
     val baseOffsetMs: Long = 0L,
+    /** True when the result came from multi-window joint pooled correlation fallback. */
+    val usedJointPooling: Boolean = false,
 )
 
 /**
@@ -196,7 +198,10 @@ object FpsStretchMatcher {
             if (jointResults != null) {
                 val jointQuality = scoreWindowSet(jointResults)
                 if (jointQuality.combinedScore > baseQuality.combinedScore + 0.05) {
-                    return SpeedMatchResult(windowResults = jointResults)
+                    return SpeedMatchResult(
+                        windowResults = jointResults,
+                        usedJointPooling = true,
+                    )
                 }
             }
         }

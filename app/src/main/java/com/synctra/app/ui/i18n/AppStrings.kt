@@ -76,8 +76,16 @@ data class AppStrings(
     val stepCorrelatingDetail: String,
     val stepExpanding: String,
     val stepExpandingDetail: String,
+    val stepExtraSampling: String,
+    val stepExtraSamplingDetail: String,
     val encodingLabel: String,
     val encodingPreviewLabel: String,
+    val pooledEstimateBadge: String,
+    val copyDiagnosticsAction: String,
+    val diagnosticsCopiedLabel: String,
+    val verifySyncedBadge: (String) -> String,
+    val verifyOffsetBadge: (String) -> String,
+    val verifyRecheckAction: String,
 ) {
     fun confidenceLabel(level: ConfidenceLevel): String = when (language) {
         AppLanguage.ID -> when (level) {
@@ -126,6 +134,7 @@ data class AppStrings(
     }
 
     fun windowShortLabel(index: Int, total: Int): String {
+        if (total > 3) return "#${index + 1}"
         if (total <= 1) return if (language == AppLanguage.ID) "Tengah" else "Middle"
         if (total == 2) {
             return when (index) {
@@ -221,8 +230,16 @@ object AppStringsProvider {
         stepCorrelatingDetail = "Korelasi suara vs subtitle & deteksi drift FPS",
         stepExpanding = "Memperluas pencarian (±2 menit)",
         stepExpandingDetail = "Mencari kemungkinan selisih besar hingga ±120 detik",
+        stepExtraSampling = "Mengambil sampel tambahan",
+        stepExtraSamplingDetail = "Akurasi awal rendah — menambah titik cek agar lebih pasti",
         encodingLabel = "Encoding",
         encodingPreviewLabel = "Pratinjau 3 baris awal",
+        pooledEstimateBadge = "Estimasi gabungan",
+        copyDiagnosticsAction = "Diagnostik",
+        diagnosticsCopiedLabel = "Diagnostik",
+        verifySyncedBadge = { ms -> "✓ File .srt terverifikasi (sisa $ms ms)" },
+        verifyOffsetBadge = { sec -> "⚠ File .srt masih meleset ${sec}s" },
+        verifyRecheckAction = "Cek ulang",
     )
 
     private val english = AppStrings(
@@ -288,7 +305,15 @@ object AppStringsProvider {
         stepCorrelatingDetail = "Correlating speech vs subtitles & checking FPS drift",
         stepExpanding = "Expanding search (±2 min)",
         stepExpandingDetail = "Scanning wider offsets up to ±120 seconds",
+        stepExtraSampling = "Sampling extra checkpoints",
+        stepExtraSamplingDetail = "Low initial confidence — adding checkpoints for accuracy",
         encodingLabel = "Encoding",
         encodingPreviewLabel = "First 3 lines preview",
+        pooledEstimateBadge = "Estimated (pooled)",
+        copyDiagnosticsAction = "Diagnostics",
+        diagnosticsCopiedLabel = "Diagnostics",
+        verifySyncedBadge = { ms -> "✓ Exported .srt verified ($ms ms residual)" },
+        verifyOffsetBadge = { sec -> "⚠ Exported .srt still off by ${sec}s" },
+        verifyRecheckAction = "Re-verify",
     )
 }

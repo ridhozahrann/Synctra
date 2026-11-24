@@ -2,12 +2,18 @@ package com.synctra.app
 
 import com.synctra.app.domain.model.CleanedSubtitleSet
 import com.synctra.app.domain.model.DriftSeverity
+import com.synctra.app.domain.model.ExportVerificationResult
 import com.synctra.app.domain.model.SampleWindow
 import com.synctra.app.domain.model.SubtitleCue
 import com.synctra.app.domain.model.SubtitleFormat
+import com.synctra.app.domain.model.SyncResultSource
 import com.synctra.app.domain.model.WindowSyncResult
+import com.synctra.app.domain.sync.SpeedMatchResult
 import com.synctra.app.domain.sync.SyncAnalyzer
+import com.synctra.app.domain.sync.SyncDiagnosticsFormatter
+import com.synctra.app.domain.sync.WindowPlanner
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -83,5 +89,89 @@ class SyncAnalyzerTest {
 
         val consensus = SyncAnalyzer.computeConsensusOffset(windows)
         assertEquals("Strongest peak (+4000ms) must win over weak median (-18500ms)", 4_000L, consensus)
+    }
+
+    @Test
+    fun jointPooledResultSkipsAgreementBoostCapsConfidenceAndFlagsSource() {
+        val windows = listOf(
+            WindowSyncResult(SampleWindow(0, "Awal", 1_200_000L, 90_000L), offsetMs = 1_500L, confidence = 0.72f, peakProminence = 4.5f, speechRatio = 0.35f),
+            WindowSyncResult(SampleWindow(1, "Tengah", 3_000_000L, 90_000L), offsetMs = 1_520L, confidence = 0.70f, peakProminence = 4.4f, speechRatio = 0.38f),
+            WindowSyncResult(SampleWindow(2, "Akhir", 4_500_000L, 90_000L), offsetMs = 1_490L, confidence = 0.74f, peakProminence = 4.6f, speechRatio = 0.36f),
+        )
+
+        val standard = SyncAnalyzer.aggregate(windows, dummySubtitles, "AAC", false, 1_000L, usedJointPooling = false)
+        val pooled = SyncAnalyzer.aggregate(windows, dummySubtitles, "AAC", false, 1_000L, usedJointPooling = true)
+
+        assertEquals(SyncResultSource.STANDARD, standard.source)
+        assertEquals(SyncResultSource.JOINT_POOLED, pooled.source)
+        assertTrue("Joint pooled confidence must be capped <= 0.75, got ${pooled.confidence}", pooled.confidence <= 0.75f)
+        assertTrue("Joint pooled must not receive agreementBoost above standard", pooled.confidence < standard.confidence)
+    }
+
+    @Test
+    fun adaptiveExtraWindowsTriggerOnlyOnLowConfidenceOrDisagreementAndAvoidOverlap() {
+        val movieMs = 5_400_000L // 90 min
+        val cues = List(400) { i ->
+            val t = 120_000L + i * 12_000L
+            SubtitleCue(i + 1, t, t + 3_000L, "Line $i", "Line $i")
+        }
+        val initial = WindowPlanner.planWindows(movieMs, cues)
+        assertEquals(3, initial.size)
+
+        val extra = WindowPlanner.planExtraWindows(movieMs, cues, initial, maxExtra = 2)
+        assertEquals(2, extra.size)
+        for (e in extra) {
+            for (existing in initial) {
+                val gap = minOf(abs(e.startMs - existing.endMs), abs(existing.startMs - e.endMs))
+                val overlaps = e.startMs < existing.endMs + 60_000L && e.endMs + 60_000L > existing.startMs
+                assertFalse("Extra window $e must stay >= 60s away from $existing (gap=$gap)", overlaps)
+            }
+        }
+        // Short clip (< 15 min) should never spawn extra windows
+        assertTrue(WindowPlanner.planExtraWindows(600_000L, cues, initial.take(2)).isEmpty())
+
+        // Decision helper: agreeing strong windows -> false; weak or disagreeing -> true
+        val strongAgree = SpeedMatchResult(
+            windowResults = listOf(
+                WindowSyncResult(initial[0], 1_000L, 0.80f, 5.5f, 0.4f),
+                WindowSyncResult(initial[1], 1_040L, 0.78f, 5.2f, 0.4f),
+                WindowSyncResult(initial[2], 980L, 0.75f, 5.0f, 0.4f),
+            )
+        )
+        assertFalse(SyncAnalyzer.shouldSampleExtraWindows(strongAgree, movieMs))
+
+        val weakDisagree = SpeedMatchResult(
+            windowResults = listOf(
+                WindowSyncResult(initial[0], -12_000L, 0.36f, 2.0f, 0.2f),
+                WindowSyncResult(initial[1], 8_500L, 0.38f, 2.1f, 0.2f),
+                WindowSyncResult(initial[2], 24_000L, 0.32f, 1.8f, 0.2f),
+            )
+        )
+        assertTrue(SyncAnalyzer.shouldSampleExtraWindows(weakDisagree, movieMs))
+    }
+
+    @Test
+    fun diagnosticsFormatterOutputsCodecWindowsAndVerificationDetails() {
+        val windows = listOf(
+            WindowSyncResult(SampleWindow(0, "Awal", 1_000_000L, 90_000L), offsetMs = 1_200L, confidence = 0.85f, peakProminence = 5.4f, speechRatio = 0.41f),
+        )
+        val result = SyncAnalyzer.aggregate(windows, dummySubtitles, "AC-3 · 5.1", true, 2_300L, audioTrackTitle = "Japanese")
+        val verify = ExportVerificationResult(residualOffsetMs = -20L, confidence = 0.88f, hasDrift = false, verifiedCuesCount = 812)
+
+        val text = SyncDiagnosticsFormatter.format(
+            result = result,
+            videoName = "Movie.mkv",
+            subtitleName = "Movie.srt",
+            encodingName = "Shift_JIS",
+            manualNudgeMs = 100L,
+            verification = verify,
+        )
+
+        assertTrue(text.contains("Movie.mkv"))
+        assertTrue(text.contains("Shift_JIS"))
+        assertTrue(text.contains("AC-3 · 5.1"))
+        assertTrue(text.contains("FFmpeg"))
+        assertTrue(text.contains("+1200 ms"))
+        assertTrue(text.contains("Export verify: residual=-20ms"))
     }
 }

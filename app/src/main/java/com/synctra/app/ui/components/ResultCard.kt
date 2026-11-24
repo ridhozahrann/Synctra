@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,7 +31,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.synctra.app.domain.model.ConfidenceLevel
 import com.synctra.app.domain.model.DriftSeverity
+import com.synctra.app.domain.model.ExportVerificationResult
 import com.synctra.app.domain.model.SyncResult
+import com.synctra.app.domain.model.SyncResultSource
 import com.synctra.app.ui.i18n.AppStrings
 import com.synctra.app.ui.theme.SynctraColors
 import java.util.Locale
@@ -41,9 +45,12 @@ fun ResultCard(
     result: SyncResult,
     effectiveOffsetMs: Long,
     manualNudgeMs: Long,
+    exportVerification: ExportVerificationResult?,
     onCopySeconds: (String) -> Unit,
     onCopyMillis: (String) -> Unit,
     onOpenSaveSrt: () -> Unit,
+    onReverifyExport: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isSynced = abs(effectiveOffsetMs) <= 150L
@@ -74,12 +81,22 @@ fun ResultCard(
                     fontWeight = FontWeight.Medium,
                     color = SynctraColors.InkMuted,
                 )
-                Text(
-                    text = "${(result.confidence * 100).toInt()}% · ${strings.confidenceLabel(result.confidenceLevel)}",
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = confidenceColor,
-                )
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "${(result.confidence * 100).toInt()}% · ${strings.confidenceLabel(result.confidenceLevel)}",
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = confidenceColor,
+                    )
+                    if (result.source == SyncResultSource.JOINT_POOLED) {
+                        Text(
+                            text = strings.pooledEstimateBadge,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = SynctraColors.InkMuted,
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -197,6 +214,48 @@ fun ResultCard(
                 )
             }
 
+            // Post-export verification badge (F1)
+            if (exportVerification != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                val verifiedOk = exportVerification.isVerifiedSynced
+                val badgeColor = if (verifiedOk) SynctraColors.Synced else SynctraColors.Accent
+                val badgeBg = if (verifiedOk) SynctraColors.SurfaceSubtle else SynctraColors.AccentDim
+                val badgeText = if (verifiedOk) {
+                    strings.verifySyncedBadge(formatSignedMillis(exportVerification.residualOffsetMs))
+                } else {
+                    strings.verifyOffsetBadge(formatSignedSeconds(exportVerification.residualOffsetMs))
+                }
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = badgeBg,
+                    border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.45f)),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = badgeText,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = badgeColor,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = onReverifyExport) {
+                            Text(
+                                text = strings.verifyRecheckAction,
+                                fontSize = 11.sp,
+                                color = SynctraColors.InkPrimary,
+                            )
+                        }
+                    }
+                }
+            }
+
             // Drift warning callout
             if (result.drift.severity != DriftSeverity.NONE) {
                 Spacer(modifier = Modifier.height(14.dp))
@@ -243,7 +302,7 @@ fun ResultCard(
                 }
             }
 
-            // 3-column monospace checkpoint strip
+            // Monospace checkpoint strip (chunked into rows of 3 so 4-6 adaptive windows stay spacious)
             if (result.windowResults.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(14.dp))
                 Surface(
@@ -252,45 +311,56 @@ fun ResultCard(
                     color = SynctraColors.Stage,
                     border = BorderStroke(1.dp, SynctraColors.Hairline),
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 10.dp, horizontal = 6.dp),
-                    ) {
-                        result.windowResults.forEachIndexed { idx, wr ->
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                horizontalAlignment = Alignment.CenterHorizontally,
+                    val rows = result.windowResults.chunked(3)
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        rows.forEachIndexed { rowIdx, rowItems ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 10.dp, horizontal = 6.dp),
                             ) {
-                                Text(
-                                    text = formatClock(wr.window.startMs),
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = SynctraColors.InkMuted,
-                                )
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Text(
-                                    text = "${formatSignedSeconds(wr.offsetMs)}s",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = SynctraColors.InkPrimary,
-                                    textAlign = TextAlign.Center,
-                                )
-                                Text(
-                                    text = "${(wr.confidence * 100).toInt()}%",
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = SynctraColors.InkMuted,
-                                )
+                                rowItems.forEachIndexed { idx, wr ->
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                    ) {
+                                        Text(
+                                            text = formatClock(wr.window.startMs),
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = SynctraColors.InkMuted,
+                                        )
+                                        Spacer(modifier = Modifier.height(3.dp))
+                                        Text(
+                                            text = "${formatSignedSeconds(wr.offsetMs)}s",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = SynctraColors.InkPrimary,
+                                            textAlign = TextAlign.Center,
+                                        )
+                                        Text(
+                                            text = "${(wr.confidence * 100).toInt()}%",
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = SynctraColors.InkMuted,
+                                        )
+                                    }
+                                    if (idx < rowItems.lastIndex) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(1.dp)
+                                                .height(36.dp)
+                                                .align(Alignment.CenterVertically)
+                                                .background(SynctraColors.Hairline),
+                                        )
+                                    }
+                                }
                             }
-                            if (idx < result.windowResults.lastIndex) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(1.dp)
-                                        .height(36.dp)
-                                        .align(Alignment.CenterVertically)
-                                        .background(SynctraColors.Hairline),
+                            if (rowIdx < rows.lastIndex) {
+                                HorizontalDivider(
+                                    color = SynctraColors.Hairline,
+                                    modifier = Modifier.padding(horizontal = 10.dp),
                                 )
                             }
                         }
@@ -298,7 +368,7 @@ fun ResultCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             val footerParts = buildList {
                 if (result.audioTrackTitle.isNotBlank()) add(result.audioTrackTitle)
@@ -307,13 +377,28 @@ fun ResultCard(
                 add("${String.format(Locale.US, "%.1f", result.analysisDurationMs / 1000.0)}s")
                 if (result.filteredJunkCues > 0) add(strings.filteredMeta(result.filteredJunkCues))
             }
-            Text(
-                text = footerParts.joinToString(" · "),
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                color = SynctraColors.InkMuted,
-                lineHeight = 16.sp,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = footerParts.joinToString(" · "),
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = SynctraColors.InkMuted,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onCopyDiagnostics) {
+                    Text(
+                        text = strings.copyDiagnosticsAction,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = SynctraColors.InkSecondary,
+                    )
+                }
+            }
         }
     }
 }

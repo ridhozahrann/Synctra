@@ -14,6 +14,7 @@ import com.synctra.app.data.media.AudioSampleExtractor
 import com.synctra.app.domain.model.AudioTrackOption
 import com.synctra.app.domain.model.CleanedSubtitleSet
 import com.synctra.app.domain.model.DriftSeverity
+import com.synctra.app.domain.model.ExportVerificationResult
 import com.synctra.app.domain.model.MediaTrackInfo
 import com.synctra.app.domain.model.ParsedSubtitleFile
 import com.synctra.app.domain.model.SubtitleCue
@@ -26,6 +27,7 @@ import com.synctra.app.domain.subtitle.SubtitleEncodingOption
 import com.synctra.app.domain.subtitle.SubtitleParser
 import com.synctra.app.domain.sync.FpsStretchMatcher
 import com.synctra.app.domain.sync.SyncAnalyzer
+import com.synctra.app.domain.sync.SyncDiagnosticsFormatter
 import com.synctra.app.domain.sync.WindowAudioInput
 import com.synctra.app.domain.sync.WindowPlanner
 import com.synctra.app.ui.components.ExportSrtOptions
@@ -59,6 +61,7 @@ data class SynctraUiState(
     val result: SyncResult? = null,
     val manualNudgeMs: Long = 0L,
     val selectedPreviewWindowIndex: Int = 0,
+    val exportVerification: ExportVerificationResult? = null,
     val errorMessage: String? = null,
     val previewState: AudioPreviewState = AudioPreviewState(),
     val activePreviewSubtitle: String? = null,
@@ -91,6 +94,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     private var analysisJob: Job? = null
     private var pendingExportOptions: ExportSrtOptions? = null
     private var lastSubtitleBytes: ByteArray? = null
+    private var lastExtractedWindows: List<WindowAudioInput> = emptyList()
+    private var lastExportedSrtUri: Uri? = null
 
     val uiState: StateFlow<SynctraUiState> = combine(
         internalState,
@@ -131,6 +136,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     fun onVideoSelected(uri: Uri) {
         previewPlayer.stop()
         analysisJob?.cancel()
+        lastExtractedWindows = emptyList()
+        lastExportedSrtUri = null
 
         viewModelScope.launch {
             val info = withContext(Dispatchers.IO) {
@@ -144,6 +151,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     selectedAudioTrackIndex = 0,
                     result = null,
                     manualNudgeMs = 0L,
+                    exportVerification = null,
                     errorMessage = null,
                 )
             }
@@ -185,11 +193,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         if (audioIndex !in tracks.indices || audioIndex == state.selectedAudioTrackIndex) return
 
         previewPlayer.stop()
+        lastExtractedWindows = emptyList()
+        lastExportedSrtUri = null
         internalState.update {
             it.copy(
                 selectedAudioTrackIndex = audioIndex,
                 result = null,
                 manualNudgeMs = 0L,
+                exportVerification = null,
                 errorMessage = null,
             )
         }
@@ -198,6 +209,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     fun onSubtitleSelected(uri: Uri) {
         previewPlayer.stop()
         analysisJob?.cancel()
+        lastExportedSrtUri = null
 
         viewModelScope.launch {
             try {
@@ -223,6 +235,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         cleanedPreviewStats = cleaned,
                         result = null,
                         manualNudgeMs = 0L,
+                        exportVerification = null,
                         errorMessage = null,
                     )
                 }
@@ -243,6 +256,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
         previewPlayer.stop()
         analysisJob?.cancel()
+        lastExportedSrtUri = null
 
         viewModelScope.launch {
             try {
@@ -271,6 +285,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         cleanedPreviewStats = cleaned,
                         result = null,
                         manualNudgeMs = 0L,
+                        exportVerification = null,
                         errorMessage = null,
                     )
                 }
@@ -302,6 +317,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     isAnalyzing = true,
                     result = null,
                     manualNudgeMs = 0L,
+                    exportVerification = null,
                     errorMessage = null,
                     progress = SyncProgress(
                         stepTitle = strings.stepPreparing,
@@ -312,7 +328,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             try {
-                val (result, analyzedTrackIndex) = withContext(Dispatchers.Default) {
+                val (result, analyzedTrackIndex, extractedInputs) = withContext(Dispatchers.Default) {
                     val mediaInfo = current.videoMeta ?: audioExtractor.probeMedia(videoFile.uri)
                     val selectedTrack = mediaInfo.audioTracks.getOrNull(chosenAudioIndex)
                         ?: mediaInfo.primaryAudio
@@ -349,13 +365,13 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         throw IllegalStateException("Could not determine video duration for sampling.")
                     }
 
-                    val extractedWindows = audioExtractor.extractWindows(
+                    var extractedWindows = audioExtractor.extractWindows(
                         uri = videoFile.uri,
                         windows = windows,
                         selectedAudioIndex = selectedTrack.audioIndex,
                         isCancelled = { !isActive },
                     ) { idx, total, _ ->
-                        val frac = 0.15f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.60f
+                        val frac = 0.15f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.55f
                         val winName = strings.windowShortLabel(idx, total)
                         internalState.update {
                             it.copy(
@@ -373,13 +389,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                             progress = SyncProgress(
                                 stepTitle = strings.stepCorrelating,
                                 stepDetail = strings.stepCorrelatingDetail,
-                                fraction = 0.85f,
+                                fraction = 0.78f,
                             ),
                         )
                     }
 
-                    val matchResult = FpsStretchMatcher.matchBest(
-                        windows = extractedWindows.map { WindowAudioInput(it.window, it.speechEnvelope) },
+                    var audioInputs = extractedWindows.map { WindowAudioInput(it.window, it.speechEnvelope) }
+                    var matchResult = FpsStretchMatcher.matchBest(
+                        windows = audioInputs,
                         dialogueCues = cleaned.dialogueCues,
                         onExpandingSearch = {
                             internalState.update {
@@ -387,12 +404,64 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                                     progress = SyncProgress(
                                         stepTitle = strings.stepExpanding,
                                         stepDetail = strings.stepExpandingDetail,
-                                        fraction = 0.92f,
+                                        fraction = 0.84f,
                                     ),
                                 )
                             }
                         },
                     )
+
+                    // Adaptive extra sampling (F2): when initial checkpoints have weak confidence
+                    // or poor agreement on a full movie, sample up to 2 extra interior windows.
+                    if (SyncAnalyzer.shouldSampleExtraWindows(matchResult, mediaInfo.durationMs)) {
+                        val extraWindows = WindowPlanner.planExtraWindows(
+                            mediaDurationMs = mediaInfo.durationMs,
+                            dialogueCues = cleaned.dialogueCues,
+                            existingWindows = extractedWindows.map { it.window },
+                            maxExtra = 2,
+                        )
+                        if (extraWindows.isNotEmpty()) {
+                            internalState.update {
+                                it.copy(
+                                    progress = SyncProgress(
+                                        stepTitle = strings.stepExtraSampling,
+                                        stepDetail = strings.stepExtraSamplingDetail,
+                                        fraction = 0.86f,
+                                    ),
+                                )
+                            }
+                            val extraExtracted = audioExtractor.extractWindows(
+                                uri = videoFile.uri,
+                                windows = extraWindows,
+                                selectedAudioIndex = selectedTrack.audioIndex,
+                                isCancelled = { !isActive },
+                            ) { idx, total, _ ->
+                                val frac = 0.87f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.08f
+                                internalState.update {
+                                    it.copy(
+                                        progress = SyncProgress(
+                                            stepTitle = strings.stepExtraSampling,
+                                            stepDetail = "${selectedTrack.displayTitle} · +${idx + 1}/$total",
+                                            fraction = frac,
+                                        ),
+                                    )
+                                }
+                            }
+                            if (extraExtracted.isNotEmpty()) {
+                                val combinedSorted = (extractedWindows + extraExtracted)
+                                    .sortedBy { it.window.startMs }
+                                    .mapIndexed { newIdx, item ->
+                                        item.copy(window = item.window.copy(index = newIdx))
+                                    }
+                                extractedWindows = combinedSorted
+                                audioInputs = combinedSorted.map { WindowAudioInput(it.window, it.speechEnvelope) }
+                                matchResult = FpsStretchMatcher.matchBest(
+                                    windows = audioInputs,
+                                    dialogueCues = cleaned.dialogueCues,
+                                )
+                            }
+                        }
+                    }
 
                     val usedFfmpeg = extractedWindows.any { it.usedFfmpegDecoder }
                     val elapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1L)
@@ -406,9 +475,13 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         analysisDurationMs = elapsedMs,
                         matchedFpsCandidate = matchResult.matchedFpsCandidate,
                         matchedBaseOffsetMs = matchResult.baseOffsetMs,
+                        usedJointPooling = matchResult.usedJointPooling,
                     )
-                    aggregated to selectedTrack.audioIndex
+                    Triple(aggregated, selectedTrack.audioIndex, audioInputs)
                 }
+
+                lastExtractedWindows = extractedInputs
+                lastExportedSrtUri = null
 
                 val bestWinIdx = result.windowResults
                     .withIndex()
@@ -490,10 +563,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         val state = internalState.value
         val parsed = state.parsedSubtitle ?: return
         val result = state.result ?: return
+        val mediaDurationMs = state.videoMeta?.durationMs ?: 0L
+        val cachedWindows = lastExtractedWindows
 
         viewModelScope.launch {
             try {
-                val (keptCount, removedCount) = withContext(Dispatchers.IO) {
+                val (keptCount, removedCount, verification) = withContext(Dispatchers.IO) {
                     val exportResult = SrtExporter.exportSrtWithStats(
                         allCues = parsed.allCues,
                         offsetMs = state.effectiveOffsetMs,
@@ -504,8 +579,17 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     DocumentMetaReader.writeUtf8Text(appContext, destinationUri, exportResult.content)
                     val removed = exportResult.excludedCount + exportResult.droppedByShiftCount
-                    exportResult.writtenCount to removed
+                    val verify = runCatching {
+                        verifyExportedSrtBytes(
+                            srtBytes = DocumentMetaReader.readAllBytes(appContext, destinationUri),
+                            cachedWindows = cachedWindows,
+                            mediaDurationMs = mediaDurationMs,
+                        )
+                    }.getOrNull()
+                    Triple(exportResult.writtenCount, removed, verify)
                 }
+                lastExportedSrtUri = destinationUri
+                internalState.update { it.copy(exportVerification = verification) }
                 onSaved(keptCount, removedCount)
             } catch (e: Exception) {
                 internalState.update {
@@ -513,6 +597,71 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    fun reverifyLastExport() {
+        val uri = lastExportedSrtUri ?: return
+        val cachedWindows = lastExtractedWindows
+        if (cachedWindows.isEmpty()) return
+        val mediaDurationMs = internalState.value.videoMeta?.durationMs ?: 0L
+
+        viewModelScope.launch {
+            val verify = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = DocumentMetaReader.readAllBytes(appContext, uri)
+                    verifyExportedSrtBytes(bytes, cachedWindows, mediaDurationMs)
+                }.getOrNull()
+            }
+            if (verify != null) {
+                internalState.update { it.copy(exportVerification = verify) }
+            }
+        }
+    }
+
+    fun buildDiagnosticsText(): String? {
+        val state = internalState.value
+        val result = state.result ?: return null
+        return SyncDiagnosticsFormatter.format(
+            result = result,
+            videoName = state.videoFile?.displayName,
+            subtitleName = state.subtitleFile?.displayName,
+            encodingName = state.parsedSubtitle?.encodingName,
+            manualNudgeMs = state.manualNudgeMs,
+            verification = state.exportVerification,
+        )
+    }
+
+    private fun verifyExportedSrtBytes(
+        srtBytes: ByteArray,
+        cachedWindows: List<WindowAudioInput>,
+        mediaDurationMs: Long,
+    ): ExportVerificationResult? {
+        if (cachedWindows.isEmpty()) return null
+        val reparsed = SubtitleParser.parse(srtBytes, "exported.srt")
+        if (reparsed.allCues.size < 3) return null
+        val cleaned = SubtitleCleaner.clean(reparsed, mediaDurationMs = mediaDurationMs)
+        if (cleaned.dialogueCues.size < 3) return null
+
+        val match = FpsStretchMatcher.matchBest(
+            windows = cachedWindows,
+            dialogueCues = cleaned.dialogueCues,
+        )
+        val aggregated = SyncAnalyzer.aggregate(
+            windowResults = match.windowResults,
+            cleanedSubtitles = cleaned,
+            audioCodecUsed = "",
+            usedFfmpegDecoder = false,
+            analysisDurationMs = 1L,
+            matchedFpsCandidate = match.matchedFpsCandidate,
+            matchedBaseOffsetMs = match.baseOffsetMs,
+            usedJointPooling = match.usedJointPooling,
+        )
+        return ExportVerificationResult(
+            residualOffsetMs = aggregated.offsetMs,
+            confidence = aggregated.confidence,
+            hasDrift = aggregated.drift.severity != DriftSeverity.NONE,
+            verifiedCuesCount = reparsed.allCues.size,
+        )
     }
 
     fun onSelectPreviewWindow(index: Int) {

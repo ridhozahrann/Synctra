@@ -7,6 +7,7 @@ import com.synctra.app.domain.model.DriftCauseKey
 import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.SubtitleCue
 import com.synctra.app.domain.model.SyncResult
+import com.synctra.app.domain.model.SyncResultSource
 import com.synctra.app.domain.model.WindowSyncResult
 import kotlin.math.abs
 import kotlin.math.roundToLong
@@ -18,6 +19,33 @@ import kotlin.math.roundToLong
  */
 object SyncAnalyzer {
 
+    private const val JOINT_CONFIDENCE_CAP = 0.75f
+
+    /**
+     * Decides whether adaptive extra sampling windows should be extracted on a movie (>= 15 min)
+     * because the initial checkpoints had weak confidence or lacked cluster agreement.
+     */
+    fun shouldSampleExtraWindows(
+        matchResult: SpeedMatchResult,
+        mediaDurationMs: Long,
+    ): Boolean {
+        if (mediaDurationMs < 15L * 60L * 1000L) return false
+        if (matchResult.matchedFpsCandidate != null) return false
+        val results = matchResult.windowResults
+        if (results.size !in 2..4) return false
+
+        val maxConf = results.maxOf { it.confidence }
+        if (maxConf < 0.50f) return true
+        if (matchResult.usedJointPooling) return true
+
+        val reliable = results.filter { it.confidence >= 0.35f }
+        if (reliable.size < 2) return true
+        val hasAgreeingPair = reliable.any { pivot ->
+            reliable.count { abs(it.offsetMs - pivot.offsetMs) <= 450L } >= 2
+        }
+        return !hasAgreeingPair
+    }
+
     fun aggregate(
         windowResults: List<WindowSyncResult>,
         cleanedSubtitles: CleanedSubtitleSet,
@@ -27,6 +55,7 @@ object SyncAnalyzer {
         audioTrackTitle: String = "",
         matchedFpsCandidate: CinemaFpsCandidate? = null,
         matchedBaseOffsetMs: Long = 0L,
+        usedJointPooling: Boolean = false,
     ): SyncResult {
         require(windowResults.isNotEmpty()) { "Minimal satu jendela sampel dibutuhkan." }
 
@@ -44,16 +73,24 @@ object SyncAnalyzer {
 
         val avgConf = validWindows.map { it.confidence }.average().toFloat()
         val agreementBoost = when {
+            usedJointPooling -> 0f
             matchedFpsCandidate != null && validWindows.size >= 2 -> 0.12f
             validWindows.size >= 2 && drift.severity == DriftSeverity.NONE -> 0.10f
             else -> 0f
         }
-        val finalConfidence = (avgConf + agreementBoost).coerceIn(0f, 0.99f)
+        val maxCap = if (usedJointPooling) JOINT_CONFIDENCE_CAP else 0.99f
+        val finalConfidence = (avgConf + agreementBoost).coerceIn(0f, maxCap)
 
         val confidenceLevel = when {
             finalConfidence >= 0.68f && (drift.severity != DriftSeverity.SEVERE || drift.isLinearStretch) -> ConfidenceLevel.HIGH
             finalConfidence >= 0.38f -> ConfidenceLevel.MEDIUM
             else -> ConfidenceLevel.LOW
+        }
+
+        val source = when {
+            matchedFpsCandidate != null -> SyncResultSource.FPS_STRETCH
+            usedJointPooling -> SyncResultSource.JOINT_POOLED
+            else -> SyncResultSource.STANDARD
         }
 
         val bestWindow = validWindows.maxBy { it.confidence * (1f + it.peakProminence * 0.2f) }
@@ -77,6 +114,7 @@ object SyncAnalyzer {
             totalDialogueCues = cleanedSubtitles.dialogueCues.size,
             filteredJunkCues = cleanedSubtitles.totalFilteredCount,
             recommendedPreviewAudioMs = previewAudioMs,
+            source = source,
         )
     }
 

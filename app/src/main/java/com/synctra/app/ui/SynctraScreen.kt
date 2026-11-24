@@ -370,9 +370,16 @@ fun SynctraScreen(
                     result = syncResult,
                     effectiveOffsetMs = state.effectiveOffsetMs,
                     manualNudgeMs = state.manualNudgeMs,
+                    exportVerification = state.exportVerification,
                     onCopySeconds = { copyWithToast(it, it) },
                     onCopyMillis = { copyWithToast(it, "$it ms") },
                     onOpenSaveSrt = { showExportSheet = true },
+                    onReverifyExport = { viewModel.reverifyLastExport() },
+                    onCopyDiagnostics = {
+                        viewModel.buildDiagnosticsText()?.let { diag ->
+                            copyWithToast(diag, strings.diagnosticsCopiedLabel)
+                        }
+                    },
                 )
 
                 AudioPreviewCard(

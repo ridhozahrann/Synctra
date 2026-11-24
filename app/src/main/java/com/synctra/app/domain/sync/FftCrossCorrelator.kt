@@ -478,7 +478,7 @@ object FftCrossCorrelator {
             val effectiveProm = maxOf(localProm, jointProminence * 0.75f)
             val corrTerm = ((bestLocalScore - 0.06) / 0.42).coerceIn(0.0, 1.0)
             val promTerm = ((effectiveProm - 1.8) / 4.2).coerceIn(0.0, 1.0)
-            val conf = (0.45 * corrTerm + 0.55 * promTerm).toFloat().coerceIn(0f, 0.92f)
+            val conf = (0.45 * corrTerm + 0.55 * promTerm).toFloat().coerceIn(0f, 0.75f)
 
             resultsByIndex[pw.audio.window.index] = WindowSyncResult(
                 window = pw.audio.window,

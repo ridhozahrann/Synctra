@@ -212,6 +212,21 @@ enum class ConfidenceLevel(val labelId: String) {
     LOW("Akurasi Rendah"),
 }
 
+enum class SyncResultSource {
+    STANDARD,
+    FPS_STRETCH,
+    JOINT_POOLED,
+}
+
+data class ExportVerificationResult(
+    val residualOffsetMs: Long,
+    val confidence: Float,
+    val hasDrift: Boolean,
+    val verifiedCuesCount: Int,
+) {
+    val isVerifiedSynced: Boolean get() = kotlin.math.abs(residualOffsetMs) <= 200L && !hasDrift
+}
+
 data class SyncResult(
     val offsetMs: Long,
     val confidence: Float,
@@ -225,6 +240,7 @@ data class SyncResult(
     val totalDialogueCues: Int,
     val filteredJunkCues: Int,
     val recommendedPreviewAudioMs: Long,
+    val source: SyncResultSource = SyncResultSource.STANDARD,
 ) {
     val offsetSeconds: Double get() = offsetMs / 1000.0
     val isAlreadySynced: Boolean get() = kotlin.math.abs(offsetMs) <= 150L
