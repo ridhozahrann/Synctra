@@ -74,4 +74,33 @@ class SrtExporterTest {
         assertEquals(4_202_800L, reparsed.allCues[1].startMs)
         assertTrue(SrtExporter.suggestedOutputFileName("Inception.2010.ass") == "Inception.2010.synced.srt")
     }
+
+    @Test
+    fun reportsAccurateCountsAndDropsNegativeShiftedStubCues() {
+        val cues = listOf(
+            SubtitleCue(1, 1_000L, 3_000L, "Excluded ad", "Excluded ad"),
+            SubtitleCue(2, 2_000L, 4_000L, "Completely before zero", "Completely before zero"),
+            SubtitleCue(3, 3_000L, 5_100L, "Tiny 100ms stub after -5s", "Tiny 100ms stub after -5s"),
+            SubtitleCue(4, 4_000L, 6_500L, "Clamped valid cue (1.5s left)", "Clamped valid cue (1.5s left)"),
+            SubtitleCue(5, 10_000L, 13_000L, "Normal shifted cue", "Normal shifted cue"),
+        )
+
+        val stats = SrtExporter.exportSrtWithStats(
+            allCues = cues,
+            offsetMs = -5_000L,
+            excludedCueIndices = setOf(1),
+        )
+
+        assertEquals(2, stats.writtenCount)
+        assertEquals(1, stats.excludedCount)
+        assertEquals(2, stats.droppedByShiftCount)
+
+        val reparsed = SubtitleParser.parse(stats.content.toByteArray(Charsets.UTF_8), "clamped.srt")
+        assertEquals(2, reparsed.allCues.size)
+        assertEquals("Clamped valid cue (1.5s left)", reparsed.allCues[0].cleanText)
+        assertEquals(0L, reparsed.allCues[0].startMs)
+        assertEquals(1_500L, reparsed.allCues[0].endMs)
+        assertEquals("Normal shifted cue", reparsed.allCues[1].cleanText)
+        assertEquals(5_000L, reparsed.allCues[1].startMs)
+    }
 }

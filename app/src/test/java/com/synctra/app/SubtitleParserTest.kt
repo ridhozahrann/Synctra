@@ -86,4 +86,46 @@ class SubtitleParserTest {
         assertEquals("Baris kedua.", parsed.allCues[1].cleanText)
         assertEquals(8_000L, parsed.allCues[1].startMs)
     }
+
+    @Test
+    fun stripsAssVectorDrawingsAndKeepsKaraokeDialogue() {
+        val ass = """
+            [Script Info]
+            Title: Typeset Anime
+            ScriptType: v4.00+
+
+            [Events]
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:10.00,0:00:14.00,Signs,,0,0,0,,{\an7\pos(120,80)\p1}m 0 0 l 120 0 120 40 0 40{\p0}
+            Dialogue: 0,0:00:15.00,0:00:18.00,Signs,,0,0,0,,{\p2}m 10 10 b 20 30 40 50 60 70
+            Dialogue: 0,0:00:20.00,0:00:24.00,OP,,0,0,0,,{\k40}Ha{\k30}lo {\kf50}du{\k20}nia!
+            Dialogue: 0,0:00:25.00,0:00:28.00,Default,,0,0,0,,{\p1}m 0 0 l 10 10{\p0}Teks setelah gambar\hmuncul.
+        """.trimIndent()
+
+        val parsed = SubtitleParser.parse(ass.toByteArray(Charsets.UTF_8), "typeset.ass")
+        assertEquals(SubtitleFormat.ASS, parsed.format)
+        assertEquals(2, parsed.allCues.size)
+        assertEquals("Halo dunia!", parsed.allCues[0].cleanText)
+        assertEquals("Teks setelah gambar muncul.", parsed.allCues[1].cleanText)
+    }
+
+    @Test
+    fun skipsWebVttNoteBlocksAndCueSettings() {
+        val vtt = """
+            WEBVTT
+
+            NOTE
+            00:00:01.000 --> 00:00:04.000
+            Comment line that must not become a cue.
+
+            00:00:10.000 --> 00:00:13.500 align:start position:10% line:85%
+            Baris dialog valid.
+        """.trimIndent()
+
+        val parsed = SubtitleParser.parse(vtt.toByteArray(Charsets.UTF_8), "notes.vtt")
+        assertEquals(SubtitleFormat.VTT, parsed.format)
+        assertEquals(1, parsed.allCues.size)
+        assertEquals("Baris dialog valid.", parsed.allCues[0].cleanText)
+        assertEquals(10_000L, parsed.allCues[0].startMs)
+    }
 }

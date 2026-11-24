@@ -285,4 +285,105 @@ class FpsDriftStretchEndToEndTest {
             abs(result.offsetMs - trueOffsetMs) <= 100L,
         )
     }
+
+    @Test
+    fun roundTripDriftExportWithDefaultApplyDriftAndNudgeRechecksSynced() {
+        // True relationship: 23.976 fps movie audio, 25.000 fps subtitle + 2200 ms initial shift
+        val trueSpeedRatio = 25.0 / (24_000.0 / 1001.0)
+        val trueBaseOffsetMs = 2_200L
+        val manualNudgeMs = 100L // simulate user nudging +0.1s; residual after re-check should reflect ~-100ms (<200ms)
+
+        val windows = listOf(
+            SampleWindow(0, "Awal (~20%)", 1_440_000L, 90_000L),
+            SampleWindow(1, "Tengah (~50%)", 3_600_000L, 90_000L),
+            SampleWindow(2, "Akhir (~75%)", 5_400_000L, 90_000L),
+        )
+        val localPattern = listOf(
+            3_000L to 6_000L,
+            10_000L to 13_500L,
+            20_000L to 24_000L,
+            32_000L to 36_200L,
+            45_000L to 49_500L,
+            58_000L to 62_000L,
+            70_000L to 74_500L,
+            80_000L to 84_800L,
+        )
+        val trueAudioIntervals = windows.flatMap { w -> localPattern.map { (s, e) -> (w.startMs + s) to (w.startMs + e) } }
+        val adCue = SubtitleCue(1, 3_000L, 9_000L, "Download film di www.contohfilm.xyz", "Download film di www.contohfilm.xyz")
+        val subCues = listOf(adCue) + trueAudioIntervals.mapIndexed { idx, (aStart, aEnd) ->
+            val sStart = ((aStart - trueBaseOffsetMs) / trueSpeedRatio).roundToLong()
+            val sEnd = ((aEnd - trueBaseOffsetMs) / trueSpeedRatio).roundToLong()
+            SubtitleCue(idx + 2, sStart, sEnd, "Dialog ${idx + 1}", "Dialog ${idx + 1}")
+        }
+
+        val frameMs = SpeechActivityDetector.FRAME_DURATION_MS
+        val windowInputs = windows.map { w ->
+            val count = (w.durationMs / frameMs).toInt()
+            val env = FloatArray(count)
+            for ((aStart, aEnd) in trueAudioIntervals) {
+                if (aEnd <= w.startMs || aStart >= w.endMs) continue
+                val i0 = ((aStart - w.startMs) / frameMs).toInt().coerceIn(0, count - 1)
+                val i1 = ((aEnd - w.startMs) / frameMs).toInt().coerceIn(i0, count - 1)
+                for (i in i0..i1) env[i] = 1.0f
+            }
+            WindowAudioInput(w, env)
+        }
+
+        // Run 1: analyze 25fps subtitle against 23.976fps movie audio
+        val cleaned1 = com.synctra.app.domain.subtitle.SubtitleCleaner.clean(
+            com.synctra.app.domain.model.ParsedSubtitleFile(SubtitleFormat.SRT, subCues, "UTF-8"),
+            mediaDurationMs = 7_200_000L,
+        )
+        val match1 = FpsStretchMatcher.matchBest(windowInputs, cleaned1.dialogueCues)
+        val result1 = SyncAnalyzer.aggregate(
+            windowResults = match1.windowResults,
+            cleanedSubtitles = cleaned1,
+            audioCodecUsed = "AC-3",
+            usedFfmpegDecoder = true,
+            analysisDurationMs = 1_000L,
+            matchedFpsCandidate = match1.matchedFpsCandidate,
+            matchedBaseOffsetMs = match1.baseOffsetMs,
+        )
+
+        // ExportSrtSheet default applyDrift flag
+        val defaultApplyDrift = result1.drift.isLinearStretch && result1.drift.severity != DriftSeverity.NONE
+        assertTrue("Expected default applyDrift to be true for 23.976 vs 25 fps", defaultApplyDrift)
+
+        val exportStats = SrtExporter.exportSrtWithStats(
+            allCues = subCues,
+            offsetMs = result1.offsetMs + manualNudgeMs,
+            excludedCueIndices = cleaned1.flaggedAdOrCreditCues.map { it.cue.index }.toSet(),
+            applyDriftCorrection = defaultApplyDrift,
+            drift = result1.drift,
+            manualNudgeMs = manualNudgeMs,
+        )
+        assertEquals(trueAudioIntervals.size, exportStats.writtenCount)
+        assertEquals(1, exportStats.excludedCount)
+        assertEquals(0, exportStats.droppedByShiftCount)
+
+        // Run 2: re-parse exported SRT and re-run full pipeline on the exact same audio
+        val reparsed = SubtitleParser.parse(exportStats.content.toByteArray(Charsets.UTF_8), "movie.synced.srt")
+        val cleaned2 = com.synctra.app.domain.subtitle.SubtitleCleaner.clean(reparsed, mediaDurationMs = 7_200_000L)
+        val match2 = FpsStretchMatcher.matchBest(windowInputs, cleaned2.dialogueCues)
+        val result2 = SyncAnalyzer.aggregate(
+            windowResults = match2.windowResults,
+            cleanedSubtitles = cleaned2,
+            audioCodecUsed = "AC-3",
+            usedFfmpegDecoder = true,
+            analysisDurationMs = 1_000L,
+            matchedFpsCandidate = match2.matchedFpsCandidate,
+            matchedBaseOffsetMs = match2.baseOffsetMs,
+        )
+
+        // Because we applied +100ms manual nudge on top of exact drift stretch, residual should be ~-100ms (well within 200ms)
+        assertTrue(
+            "Expected residual offset within +/-200ms after drift export + 100ms nudge, got ${result2.offsetMs}ms",
+            abs(result2.offsetMs) <= 200L,
+        )
+        assertTrue(
+            "Expected residual near -100ms (proving nudge applied once, not doubled), got ${result2.offsetMs}ms",
+            abs(result2.offsetMs - (-manualNudgeMs)) <= 50L,
+        )
+        assertEquals(DriftSeverity.NONE, result2.drift.severity)
+    }
 }

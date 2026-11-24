@@ -17,8 +17,14 @@ import com.synctra.app.domain.model.SubtitleCue
 object SubtitleCleaner {
 
     private val urlPattern = Regex(
-        """(?i)(https?://|www\.|\b[a-z0-9-]+\.(com|org|net|id|tv|xyz|info|io|co|me|cc|to|vip|site)\b)"""
+        """(?i)(https?://\S+|\bwww\.[a-z0-9-]+(?:\.[a-z0-9-]+)+|\b[a-z0-9-]{2,}\.(com|org|net|xyz|info|vip|site)\b|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.(id|tv|io|co|me|cc|to)\b|\b[a-z0-9-]+\.(id|tv|io|co|me|cc|to)/\S+)"""
     )
+
+    private val shortAcronymCreditRegex = Regex("""(?i)\bidfl\b""")
+
+    private const val LONG_BANNER_INTRO_WINDOW_MS = 3L * 60L * 1000L
+    private const val LONG_BANNER_OUTRO_WINDOW_MS = 5L * 60L * 1000L
+    private const val LONG_BANNER_MIN_OUTRO_MEDIA_MS = 10L * 60L * 1000L
 
     private val adOrCreditKeywords = listOf(
         // English credits / ripper / subtitle sites
@@ -42,7 +48,11 @@ object SubtitleCleaner {
         "subscene",
         "addic7ed",
         "yify",
-        "yts.",
+        "yts.mx",
+        "yts.lt",
+        "yts.ag",
+        "yts.am",
+        "yts.rs",
         "rarbg",
         "advertise your product",
         "support us and become",
@@ -62,11 +72,15 @@ object SubtitleCleaner {
         "lebah ganteng",
         "pein akatsuki",
         "kakek salep",
-        "idfl",
         "download film",
-        "nonton film",
+        "nonton film gratis",
+        "nonton film online",
+        "nonton film sub",
         "kunjungi situs",
-        "iklan",
+        "pasang iklan",
+        "iklan di sini",
+        "slot iklan",
+        "open iklan",
         "saweria",
         "trakteer",
         "donasi",
@@ -92,11 +106,12 @@ object SubtitleCleaner {
         val applyEdgeTrim = mediaDurationMs >= 15L * 60L * 1000L
         val introGuardMs = 35_000L
         val outroGuardMs = if (applyEdgeTrim) mediaDurationMs - 60_000L else Long.MAX_VALUE
+        val timelineEndMs = maxOf(mediaDurationMs, parsed.allCues.maxOfOrNull { it.endMs } ?: 0L)
 
         val kept = mutableListOf<SubtitleCue>()
 
         for (cue in parsed.allCues) {
-            val adReason = detectAdOrCreditReason(cue)
+            val adReason = detectAdOrCreditReason(cue, timelineEndMs)
             if (adReason != null) {
                 flaggedAds.add(FlaggedSubtitleCue(cue, adReason))
                 continue
@@ -119,7 +134,7 @@ object SubtitleCleaner {
             kept
         } else {
             edgeCount = 0
-            parsed.allCues.filterNot { detectAdOrCreditReason(it) != null || isNonSpeechSdh(it.cleanText) }
+            parsed.allCues.filterNot { detectAdOrCreditReason(it, timelineEndMs) != null || isNonSpeechSdh(it.cleanText) }
         }
 
         return CleanedSubtitleSet(
@@ -134,15 +149,23 @@ object SubtitleCleaner {
         )
     }
 
-    internal fun detectAdOrCreditReason(cue: SubtitleCue): FlagReason? {
+    internal fun detectAdOrCreditReason(cue: SubtitleCue, timelineEndMs: Long = 0L): FlagReason? {
         val lower = cue.cleanText.lowercase()
         if (urlPattern.containsMatchIn(lower)) return FlagReason.URL
-        if (adOrCreditKeywords.any { lower.contains(it) }) return FlagReason.CREDIT
-        if (cue.durationMs > 14_000L && cue.cleanText.length < 120) return FlagReason.LONG_BANNER
+        if (adOrCreditKeywords.any { lower.contains(it) } || shortAcronymCreditRegex.containsMatchIn(lower)) {
+            return FlagReason.CREDIT
+        }
+        val inIntroWindow = cue.startMs < LONG_BANNER_INTRO_WINDOW_MS
+        val inOutroWindow = timelineEndMs >= LONG_BANNER_MIN_OUTRO_MEDIA_MS &&
+            cue.endMs > timelineEndMs - LONG_BANNER_OUTRO_WINDOW_MS
+        if (cue.durationMs > 14_000L && cue.cleanText.length < 120 && (inIntroWindow || inOutroWindow)) {
+            return FlagReason.LONG_BANNER
+        }
         return null
     }
 
-    internal fun isAdOrCredit(cue: SubtitleCue): Boolean = detectAdOrCreditReason(cue) != null
+    internal fun isAdOrCredit(cue: SubtitleCue, timelineEndMs: Long = 0L): Boolean =
+        detectAdOrCreditReason(cue, timelineEndMs) != null
 
     internal fun isNonSpeechSdh(cleanText: String): Boolean {
         val trimmed = cleanText.trim()

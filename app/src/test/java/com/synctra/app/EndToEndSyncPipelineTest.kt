@@ -118,6 +118,88 @@ class EndToEndSyncPipelineTest {
         assertTrue("Expected high confidence, got ${result.confidence}", result.confidence >= 0.65f)
     }
 
+    @Test
+    fun recoversExactOffsetAt48kHzWithHighFrequencyMusicEnergy() {
+        val trueOffsetMs = -2_400L
+        val sampleRate = 48_000
+        val winStartMs = 1_200_000L // 20:00 in a 90-minute movie
+        val winDurationMs = 90_000L
+
+        val spokenIntervalsMs = listOf(
+            1_204_000L to 1_207_200L,
+            1_211_500L to 1_215_000L,
+            1_222_000L to 1_226_100L,
+            1_235_400L to 1_239_200L,
+            1_247_000L to 1_251_400L,
+            1_258_800L to 1_262_500L,
+            1_271_000L to 1_274_800L,
+            1_281_500L to 1_285_500L,
+        )
+
+        val sb = StringBuilder()
+        var idx = 1
+        for ((sMs, eMs) in spokenIntervalsMs) {
+            sb.append(idx++).append("\n")
+            sb.append(formatSrtTime(sMs - trueOffsetMs))
+                .append(" --> ")
+                .append(formatSrtTime(eMs - trueOffsetMs))
+                .append("\n")
+            sb.append("Dialog 48kHz nomor $idx.\n\n")
+        }
+
+        val parsed = SubtitleParser.parse(sb.toString().toByteArray(Charsets.UTF_8), "jp_movie.srt")
+        val cleaned = SubtitleCleaner.clean(parsed, mediaDurationMs = 5_400_000L)
+
+        // Synthesize 48 kHz PCM with strong high-frequency (>4 kHz) cymbal/synth music throughout
+        // plus vocal formants during spokenIntervalsMs. Native-rate VAD must NOT alias >4 kHz into voice band.
+        val totalSamples = (winDurationMs * sampleRate / 1000L).toInt()
+        val pcm = FloatArray(totalSamples) { i ->
+            val t = i.toDouble() / sampleRate
+            val music = 0.20 * sin(2.0 * PI * 6_200.0 * t) +
+                0.18 * sin(2.0 * PI * 9_400.0 * t) +
+                0.15 * sin(2.0 * PI * 14_500.0 * t) +
+                0.10 * sin(2.0 * PI * 80.0 * t)
+            music.toFloat()
+        }
+        for ((sMs, eMs) in spokenIntervalsMs) {
+            val sIdx = ((sMs - winStartMs) * sampleRate / 1000L).toInt().coerceIn(0, totalSamples)
+            val eIdx = ((eMs - winStartMs) * sampleRate / 1000L).toInt().coerceIn(sIdx, totalSamples)
+            for (i in sIdx until eIdx) {
+                val t = i.toDouble() / sampleRate
+                val syllabic = 0.55 + 0.45 * sin(2.0 * PI * 4.5 * t)
+                val voice = 0.34 * sin(2.0 * PI * 540.0 * t) +
+                    0.26 * sin(2.0 * PI * 1_320.0 * t) +
+                    0.16 * sin(2.0 * PI * 2_400.0 * t)
+                pcm[i] += (voice * syllabic).toFloat()
+            }
+        }
+
+        val vad = SpeechActivityDetector(sampleRate = sampleRate)
+        val envelope = vad.detectEnvelope(pcm)
+
+        val window = SampleWindow(0, "Awal (~20%)", winStartMs, winDurationMs)
+        val wr = FftCrossCorrelator.correlateWindow(
+            window = window,
+            audioEnvelope = envelope,
+            dialogueCues = cleaned.dialogueCues,
+            maxLagMs = 30_000L,
+        )
+        val result = SyncAnalyzer.aggregate(
+            windowResults = listOf(wr),
+            cleanedSubtitles = cleaned,
+            audioCodecUsed = "AAC · 48 kHz",
+            usedFfmpegDecoder = false,
+            analysisDurationMs = 1_200L,
+        )
+
+        val errorMs = abs(result.offsetMs - trueOffsetMs)
+        assertTrue(
+            "Expected 48 kHz offset near $trueOffsetMs ms, got ${result.offsetMs} ms (error=$errorMs ms, conf=${result.confidence})",
+            errorMs <= 80L,
+        )
+        assertTrue("Expected solid confidence at 48 kHz, got ${result.confidence}", result.confidence >= 0.60f)
+    }
+
     private fun formatSrtTime(ms: Long): String {
         val h = ms / 3_600_000
         val m = (ms % 3_600_000) / 60_000

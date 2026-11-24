@@ -425,7 +425,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val (keptCount, removedCount) = withContext(Dispatchers.IO) {
-                    val srtContent = SrtExporter.exportSrt(
+                    val exportResult = SrtExporter.exportSrtWithStats(
                         allCues = parsed.allCues,
                         offsetMs = state.effectiveOffsetMs,
                         excludedCueIndices = options.excludedCueIndices,
@@ -433,10 +433,9 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         drift = result.drift,
                         manualNudgeMs = state.manualNudgeMs,
                     )
-                    DocumentMetaReader.writeUtf8Text(appContext, destinationUri, srtContent)
-                    val removed = options.excludedCueIndices.size
-                    val kept = (parsed.allCues.size - removed).coerceAtLeast(0)
-                    kept to removed
+                    DocumentMetaReader.writeUtf8Text(appContext, destinationUri, exportResult.content)
+                    val removed = exportResult.excludedCount + exportResult.droppedByShiftCount
+                    exportResult.writtenCount to removed
                 }
                 onSaved(keptCount, removedCount)
             } catch (e: Exception) {

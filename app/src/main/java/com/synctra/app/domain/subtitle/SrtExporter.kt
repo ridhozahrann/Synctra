@@ -12,9 +12,17 @@ import kotlin.math.roundToLong
  *   `newTime = origTime + anchorOffset + (origTime - anchorTime) * (speedRatio - 1) + manualNudgeMs`
  * - Selective exclusion of user-confirmed ad/credit/SDH cues
  */
+data class SrtExportResult(
+    val content: String,
+    val writtenCount: Int,
+    val excludedCount: Int,
+    val droppedByShiftCount: Int,
+)
+
 object SrtExporter {
 
     private const val MIN_CUE_DURATION_MS = 300L
+    private const val MIN_CLAMPED_VISIBLE_DURATION_MS = 200L
 
     fun exportSrt(
         allCues: List<SubtitleCue>,
@@ -23,16 +31,38 @@ object SrtExporter {
         applyDriftCorrection: Boolean = false,
         drift: DriftAssessment? = null,
         manualNudgeMs: Long = 0L,
-    ): String {
+    ): String = exportSrtWithStats(
+        allCues = allCues,
+        offsetMs = offsetMs,
+        excludedCueIndices = excludedCueIndices,
+        applyDriftCorrection = applyDriftCorrection,
+        drift = drift,
+        manualNudgeMs = manualNudgeMs,
+    ).content
+
+    fun exportSrtWithStats(
+        allCues: List<SubtitleCue>,
+        offsetMs: Long,
+        excludedCueIndices: Set<Int> = emptySet(),
+        applyDriftCorrection: Boolean = false,
+        drift: DriftAssessment? = null,
+        manualNudgeMs: Long = 0L,
+    ): SrtExportResult {
         val sb = StringBuilder(allCues.size * 64)
         var outIndex = 1
+        var writtenCount = 0
+        var excludedCount = 0
+        var droppedByShiftCount = 0
 
         val useDrift = applyDriftCorrection &&
             drift != null &&
             (drift.speedRatio != 1.0 || drift.driftMsPerHour != 0.0)
 
         for (cue in allCues) {
-            if (cue.index in excludedCueIndices) continue
+            if (cue.index in excludedCueIndices) {
+                excludedCount++
+                continue
+            }
 
             val newStart = shiftTimestamp(
                 origMs = cue.startMs,
@@ -49,10 +79,15 @@ object SrtExporter {
                 manualNudgeMs = manualNudgeMs,
             )
 
-            if (rawEnd <= 0L) continue
+            // Drop cues shifted completely before 00:00:00,000, or clipped down to an unusable stub (<200 ms)
+            if (rawEnd <= 0L || (newStart < 0L && rawEnd < MIN_CLAMPED_VISIBLE_DURATION_MS)) {
+                droppedByShiftCount++
+                continue
+            }
 
             val clampedStart = newStart.coerceAtLeast(0L)
-            val clampedEnd = rawEnd.coerceAtLeast(clampedStart + MIN_CUE_DURATION_MS)
+            val minDuration = if (newStart < 0L) MIN_CLAMPED_VISIBLE_DURATION_MS else MIN_CUE_DURATION_MS
+            val clampedEnd = rawEnd.coerceAtLeast(clampedStart + minDuration)
 
             sb.append(outIndex++)
                 .append("\r\n")
@@ -62,9 +97,15 @@ object SrtExporter {
                 .append("\r\n")
                 .append(cue.cleanText.replace("\n", "\r\n"))
                 .append("\r\n\r\n")
+            writtenCount++
         }
 
-        return sb.toString()
+        return SrtExportResult(
+            content = sb.toString(),
+            writtenCount = writtenCount,
+            excludedCount = excludedCount,
+            droppedByShiftCount = droppedByShiftCount,
+        )
     }
 
     fun suggestedOutputFileName(originalSubtitleName: String?): String {

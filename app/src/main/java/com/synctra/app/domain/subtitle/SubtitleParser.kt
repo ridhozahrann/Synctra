@@ -159,6 +159,11 @@ object SubtitleParser {
 
         while (i < lines.size) {
             val line = lines[i].trim()
+            if (line.startsWith("NOTE", ignoreCase = true) && (line.length == 4 || line[4].isWhitespace())) {
+                i++
+                while (i < lines.size && lines[i].isNotBlank()) i++
+                continue
+            }
             val fullMatch = srtTimestampRegex.find(line)
             val shortMatch = if (fullMatch == null) vttShortTimestampRegex.find(line) else null
 
@@ -217,6 +222,8 @@ object SubtitleParser {
         return cues
     }
 
+    private val assDrawingLevelRegex = Regex("""\\p(\d+)""")
+
     private fun parseAss(content: String): List<SubtitleCue> {
         val cues = mutableListOf<SubtitleCue>()
         val lines = content.split("\n")
@@ -250,8 +257,9 @@ object SubtitleParser {
                 val startMs = parseAssTimestamp(parts[startIdx].trim()) ?: continue
                 val endMs = parseAssTimestamp(parts[endIdx].trim()) ?: continue
                 val rawText = parts[textIdx].trim()
+                val withoutDrawings = stripAssDrawingCommands(rawText)
                 val cleanText = stripFormatting(
-                    rawText
+                    withoutDrawings
                         .replace("\\N", "\n")
                         .replace("\\n", "\n")
                         .replace("\\h", " ")
@@ -263,6 +271,35 @@ object SubtitleParser {
             }
         }
         return cues
+    }
+
+    /**
+     * Removes ASS/SSA vector drawing segments activated by `\p1`..`\pN` (N > 0) until `\p0` or
+     * end-of-line so typesetting coordinates (`m 0 0 l 100 0 ...`) never count as spoken dialogue.
+     */
+    internal fun stripAssDrawingCommands(rawText: String): String {
+        if (!rawText.contains("\\p")) return rawText
+
+        val out = StringBuilder(rawText.length)
+        var cursor = 0
+        var inDrawingMode = false
+
+        for (match in assOverrideRegex.findAll(rawText)) {
+            if (!inDrawingMode && match.range.first > cursor) {
+                out.append(rawText, cursor, match.range.first)
+            }
+            val lastDrawingTag = assDrawingLevelRegex.findAll(match.value).lastOrNull()
+            if (lastDrawingTag != null) {
+                val level = lastDrawingTag.groupValues[1].toIntOrNull() ?: 0
+                inDrawingMode = level > 0
+            }
+            cursor = match.range.last + 1
+        }
+
+        if (!inDrawingMode && cursor < rawText.length) {
+            out.append(rawText, cursor, rawText.length)
+        }
+        return out.toString()
     }
 
     private fun parseAssTimestamp(ts: String): Long? {
