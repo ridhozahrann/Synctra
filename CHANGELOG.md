@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.4.0
+- Added automatic multi-charset detection for legacy subtitle encodings (`Shift_JIS`, `EUC-KR`, `GBK`, `Big5`, `windows-1251`, `windows-1256`, `windows-1252`) and a collapsible encoding picker with a 3-line live preview.
+- Stripped ASS/SSA vector drawing segments (`\p1`..`\pN` until `\p0`) so typesetting shapes no longer pollute dialogue cues, and skipped WebVTT `NOTE` comment blocks cleanly.
+- Tightened `SubtitleCleaner` URL patterns, Indonesian ad keywords (avoiding false matches on `"iklan"` / `"menonton film"`), and intro/outro scoping for `LONG_BANNER` cues.
+- Added adaptive extra checkpoint sampling (up to 2 additional non-overlapping windows on movies >= 15 min) when initial windows have low confidence or poor cluster agreement.
+- Added automatic post-export `.srt` verification against cached audio envelopes (zero extra decoding) with a one-tap Re-verify button and an offline Diagnostics copy button.
+- Calibrated joint-pooled correlation confidence (capped at 75% with an `Estimated (pooled)` badge and no artificial agreement boost).
+- Improved `SrtExporter` clamping (dropping negative-shifted stubs shorter than 200 ms) and reported exact written/removed cue counts.
+- Optimized `FftCrossCorrelator` and `FpsStretchMatcher` by caching per-window coarse audio FFTs across FPS candidates, using O(1) prefix-sum Pearson refinement, and replacing boxed `HashMap` buffers with flat `DoubleArray`s.
+- Kept the screen awake (`keepScreenOn`) during active analysis, unified subtitle cleaning across preview and analysis, keyed recent history by audio track (up to 20 entries), replaced the preview stop icon with a rounded square, and hardened `AndroidManifest.xml` (`allowBackup="false"`, predictive back).
+- Automated `CHANGELOG.md` extraction and dynamic APK sizes in GitHub Release workflows, added `:app:lintRelease` to CI, and expanded unit test coverage to 39 tests.
+
 ## v1.3.2
 - Fixed false auto-enabled FPS drift stretch in `SyncAnalyzer.assessDrift` when only 2 checkpoints passed or when the shift was a non-FPS scene cut (`DIFFERENT_CUT` / `GRADUAL_SHIFT`), preventing exported `.srt` timestamps from being warped out of sync.
 - Made `FpsStretchMatcher` outlier-resistant using cluster-based scoring so a single noisy checkpoint cannot strip 1.0x agreement and trigger a false cinema FPS match.
