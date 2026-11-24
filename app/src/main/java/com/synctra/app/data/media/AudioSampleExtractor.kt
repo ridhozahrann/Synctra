@@ -139,9 +139,14 @@ class AudioSampleExtractor(private val context: Context) {
                         window = window,
                         isCancelled = isCancelled,
                     )
+                    val actualDurationMs = if (envelope.isNotEmpty()) {
+                        envelope.size.toLong() * SpeechActivityDetector.FRAME_DURATION_MS
+                    } else {
+                        window.durationMs
+                    }
                     results.add(
                         ExtractedWindowAudio(
-                            window = window.copy(startMs = actualStartMs),
+                            window = window.copy(startMs = actualStartMs, durationMs = actualDurationMs),
                             speechEnvelope = envelope,
                             usedFfmpegDecoder = decoder.isFfmpeg,
                         )

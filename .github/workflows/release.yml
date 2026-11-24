@@ -115,10 +115,10 @@ jobs:
           - **\`Synctra-${TAG_NAME}-universal.apk\`** (~7.2 MB) — works on all Android ABIs (64-bit & 32-bit ARM, x86).
 
           ### What's new in $TAG_NAME
-          - Fixed 10-second Audio Check getting stuck on "Loading audio..." when replaying an already-buffered clip
-          - Made Cancel stop background audio extraction/decoding immediately
-          - Preserved pending \`.srt\` export options across screen rotation / Activity recreation while the Android file picker is open
-          - Auto-pause Audio Check preview when leaving the app, and hardened SRT/VTT parsing for files missing blank lines between cues
+          - Fixed false auto-enabled FPS drift stretch on 2-checkpoint / scene-cut results that could warp exported \`.srt\` timestamps out of sync
+          - Made cinema FPS matching outlier-resistant using cluster scoring so a single noisy checkpoint cannot trigger a false FPS stretch
+          - Upgraded offset consensus to squared-confidence cluster voting (strongest peak wins when checkpoints disagree, instead of weak medians)
+          - Added lightweight joint multi-window pooled correlation (~2–5 ms CPU, zero extra audio decoding) for cleaner accuracy and round-trip consistency on noisy/BGM-heavy movies
           EOF
             gh release create "$TAG_NAME" "$ARM64_APK" "$UNIVERSAL_APK" \
               --title "Synctra $TAG_NAME" \

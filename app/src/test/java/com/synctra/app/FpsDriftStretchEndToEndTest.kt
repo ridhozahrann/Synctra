@@ -155,4 +155,134 @@ class FpsDriftStretchEndToEndTest {
         assertFalse("Abrupt scene cut jump must NOT be flagged as smooth linear FPS stretch", drift.isLinearStretch)
         assertEquals(DriftCauseKey.DIFFERENT_CUT, drift.causeKey)
     }
+
+    @Test
+    fun twoNoisyOrSceneCutWindowsNeverAutoEnableLinearFpsStretch() {
+        // 2 windows with mediocre confidence (0.48 & 0.50) jumping by +8 seconds over 30 min -> NOT a cinema FPS ratio!
+        val windows = listOf(
+            WindowSyncResult(SampleWindow(0, "Awal", 1_200_000L, 90_000L), offsetMs = 1_000L, confidence = 0.50f, peakProminence = 3.2f, speechRatio = 0.35f),
+            WindowSyncResult(SampleWindow(1, "Tengah", 3_000_000L, 90_000L), offsetMs = 9_000L, confidence = 0.48f, peakProminence = 3.0f, speechRatio = 0.30f),
+            WindowSyncResult(SampleWindow(2, "Akhir", 4_800_000L, 90_000L), offsetMs = -20_000L, confidence = 0.20f, peakProminence = 1.2f, speechRatio = 0.08f),
+        )
+
+        val drift = SyncAnalyzer.assessDrift(windows)
+        assertFalse("Non-FPS 2-window jump must NOT auto-enable linear FPS stretch", drift.isLinearStretch)
+    }
+
+    @Test
+    fun roundTripSaveSrtRemovingAdsAndRecheckReturnsZeroOffset() {
+        val trueOffsetMs = -4_650L
+        val windows = listOf(
+            SampleWindow(0, "Awal", 1_200_000L, 90_000L),
+            SampleWindow(1, "Tengah", 3_000_000L, 90_000L),
+            SampleWindow(2, "Akhir", 4_500_000L, 90_000L),
+        )
+        val localPattern = listOf(
+            3_000L to 6_200L,
+            10_500L to 14_000L,
+            21_000L to 24_500L,
+            31_000L to 35_500L,
+            44_000L to 48_000L,
+            56_000L to 60_500L,
+            68_000L to 72_200L,
+            79_000L to 84_000L,
+        )
+        val trueAudioIntervals = windows.flatMap { w -> localPattern.map { (s, e) -> (w.startMs + s) to (w.startMs + e) } }
+        val adCue = SubtitleCue(1, 5_000L, 12_000L, "Sub indo oleh www.filmgratis.xyz", "Sub indo oleh www.filmgratis.xyz")
+        val dialogueCues = trueAudioIntervals.mapIndexed { idx, (aS, aE) ->
+            SubtitleCue(idx + 2, aS - trueOffsetMs, aE - trueOffsetMs, "Dialog ${idx + 1}", "Dialog ${idx + 1}")
+        }
+        val allCues = listOf(adCue) + dialogueCues
+
+        val frameMs = SpeechActivityDetector.FRAME_DURATION_MS
+        val windowInputs = windows.map { w ->
+            val count = (w.durationMs / frameMs).toInt()
+            val env = FloatArray(count)
+            for ((aS, aE) in trueAudioIntervals) {
+                if (aE <= w.startMs || aS >= w.endMs) continue
+                val i0 = ((aS - w.startMs) / frameMs).toInt().coerceIn(0, count - 1)
+                val i1 = ((aE - w.startMs) / frameMs).toInt().coerceIn(i0, count - 1)
+                for (i in i0..i1) env[i] = 1.0f
+            }
+            WindowAudioInput(w, env)
+        }
+
+        // Run 1: analyze polluted shifted subtitles
+        val cleaned1 = com.synctra.app.domain.subtitle.SubtitleCleaner.clean(
+            com.synctra.app.domain.model.ParsedSubtitleFile(SubtitleFormat.SRT, allCues, "UTF-8"),
+            mediaDurationMs = 6_000_000L,
+        )
+        val match1 = FpsStretchMatcher.matchBest(windowInputs, cleaned1.dialogueCues)
+        val result1 = SyncAnalyzer.aggregate(match1.windowResults, cleaned1, "AAC", false, 500L, matchedFpsCandidate = match1.matchedFpsCandidate, matchedBaseOffsetMs = match1.baseOffsetMs)
+        assertTrue("Run 1 should recover ~-4650ms, got ${result1.offsetMs}", abs(result1.offsetMs - trueOffsetMs) <= 45L)
+        assertEquals(DriftSeverity.NONE, result1.drift.severity)
+
+        // Export synced SRT removing the detected ad cue
+        val exported = SrtExporter.exportSrt(
+            allCues = allCues,
+            offsetMs = result1.offsetMs,
+            excludedCueIndices = cleaned1.flaggedAdOrCreditCues.map { it.cue.index }.toSet(),
+            applyDriftCorrection = result1.drift.isLinearStretch && result1.drift.severity != DriftSeverity.NONE,
+            drift = result1.drift,
+        )
+
+        // Run 2: load exported SRT back into Synctra on the SAME movie audio
+        val reparsed = SubtitleParser.parse(exported.toByteArray(Charsets.UTF_8), "movie.synced.srt")
+        val cleaned2 = com.synctra.app.domain.subtitle.SubtitleCleaner.clean(reparsed, mediaDurationMs = 6_000_000L)
+        assertEquals("Ad cue must be gone in exported SRT", 0, cleaned2.flaggedAdOrCreditCues.size)
+
+        val match2 = FpsStretchMatcher.matchBest(windowInputs, cleaned2.dialogueCues)
+        val result2 = SyncAnalyzer.aggregate(match2.windowResults, cleaned2, "AAC", false, 500L, matchedFpsCandidate = match2.matchedFpsCandidate, matchedBaseOffsetMs = match2.baseOffsetMs)
+        assertTrue("Run 2 on exported SRT must be synced (~0ms), got ${result2.offsetMs}ms", abs(result2.offsetMs) <= 40L)
+        assertTrue("Run 2 must report isAlreadySynced", result2.isAlreadySynced)
+        assertEquals(DriftSeverity.NONE, result2.drift.severity)
+    }
+
+    @Test
+    fun jointPooledCorrelationRecoversSharedOffsetWhenIndividualWindowsAreNoisy() {
+        val trueOffsetMs = 4_200L
+        val windows = listOf(
+            SampleWindow(0, "Awal", 1_200_000L, 90_000L),
+            SampleWindow(1, "Tengah", 3_000_000L, 90_000L),
+            SampleWindow(2, "Akhir", 4_500_000L, 90_000L),
+        )
+        // Unique dialogue rhythms per window
+        val patterns = listOf(
+            listOf(4_000L to 7_500L, 18_000L to 22_000L, 41_000L to 45_500L, 67_000L to 71_000L),
+            listOf(6_000L to 9_000L, 25_000L to 29_500L, 49_000L to 53_000L, 74_000L to 79_000L),
+            listOf(8_000L to 12_000L, 29_000L to 33_000L, 55_000L to 59_500L, 76_000L to 80_500L),
+        )
+        val cues = mutableListOf<SubtitleCue>()
+        var id = 1
+        val frameMs = SpeechActivityDetector.FRAME_DURATION_MS
+        val windowInputs = windows.mapIndexed { wIdx, w ->
+            val count = (w.durationMs / frameMs).toInt()
+            val env = FloatArray(count)
+            // Add true dialogue bursts (moderately weak) PLUS a strong distractor BGM burst at a DIFFERENT random lag per window!
+            val distractorShiftMs = listOf(-17_000L, 23_000L, -29_000L)[wIdx]
+            for ((s, e) in patterns[wIdx]) {
+                cues.add(SubtitleCue(id++, w.startMs + s - trueOffsetMs, w.startMs + e - trueOffsetMs, "Line $id", "Line $id"))
+                // True speech signal (0.55)
+                val i0 = (s / frameMs).toInt().coerceIn(0, count - 1)
+                val i1 = (e / frameMs).toInt().coerceIn(i0, count - 1)
+                for (i in i0..i1) env[i] = maxOf(env[i], 0.55f)
+                // Stronger window-specific false distractor matching cues shifted by distractorShiftMs (0.85)
+                val d0 = ((s - trueOffsetMs + distractorShiftMs) / frameMs).toInt().coerceIn(0, count - 1)
+                val d1 = ((e - trueOffsetMs + distractorShiftMs) / frameMs).toInt().coerceIn(d0, count - 1)
+                if (d1 > d0) {
+                    for (i in d0..d1) env[i] = maxOf(env[i], 0.85f)
+                }
+            }
+            WindowAudioInput(w, env)
+        }
+
+        // Joint pooled correlation should constructively reinforce the true +4200ms offset across all 3 windows
+        val match = FpsStretchMatcher.matchBest(windowInputs, cues)
+        val cleaned = CleanedSubtitleSet(SubtitleFormat.SRT, cues, cues, 0, 0, 0)
+        val result = SyncAnalyzer.aggregate(match.windowResults, cleaned, "AAC", false, 400L)
+        assertTrue(
+            "Joint pooled correlation should recover ~+4200ms despite per-window distractors, got ${result.offsetMs}ms",
+            abs(result.offsetMs - trueOffsetMs) <= 100L,
+        )
+    }
 }

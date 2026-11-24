@@ -30,7 +30,9 @@ object SyncAnalyzer {
     ): SyncResult {
         require(windowResults.isNotEmpty()) { "Minimal satu jendela sampel dibutuhkan." }
 
-        val validWindows = windowResults.filter { it.confidence >= 0.18f }
+        val maxConfAll = windowResults.maxOf { it.confidence }
+        val minValidConf = maxOf(0.25f, maxConfAll * 0.45f)
+        val validWindows = windowResults.filter { it.confidence >= minValidConf }
             .ifEmpty { listOf(windowResults.maxBy { it.confidence }) }
 
         val consensusOffsetMs = computeConsensusOffset(validWindows)
@@ -116,37 +118,43 @@ object SyncAnalyzer {
     }
 
     /**
-     * Weighted median / cluster consensus so a single noisy action window cannot skew the offset.
+     * Squared-confidence cluster consensus so weak noisy peaks cannot outvote a strong lock.
+     * When no 2 windows agree within 350ms, picks the highest-confidence window instead of
+     * a meaningless median of unrelated offsets.
      */
     internal fun computeConsensusOffset(windows: List<WindowSyncResult>): Long {
         if (windows.size == 1) return windows.first().offsetMs
 
-        if (windows.size >= 3) {
-            var bestCluster: List<WindowSyncResult> = emptyList()
-            var bestWeight = -1.0
-            for (pivot in windows) {
-                val cluster = windows.filter { abs(it.offsetMs - pivot.offsetMs) <= 350L }
-                val weight = cluster.sumOf { (it.confidence * (1f + it.peakProminence * 0.15f)).toDouble() }
-                if (cluster.size > bestCluster.size || (cluster.size == bestCluster.size && weight > bestWeight)) {
-                    bestCluster = cluster
-                    bestWeight = weight
-                }
+        var bestCluster: List<WindowSyncResult> = emptyList()
+        var bestWeight = -1.0
+        for (pivot in windows) {
+            val cluster = windows.filter { abs(it.offsetMs - pivot.offsetMs) <= 350L }
+            val weight = cluster.sumOf {
+                val c = it.confidence.toDouble().coerceAtLeast(0.05)
+                c * c * (1.0 + it.peakProminence * 0.15)
             }
-            if (bestCluster.size >= 2) {
-                val totalW = bestCluster.sumOf { it.confidence.toDouble().coerceAtLeast(0.05) }
-                val weightedSum = bestCluster.sumOf { it.offsetMs * it.confidence.toDouble().coerceAtLeast(0.05) }
-                return (weightedSum / totalW).toLong()
+            if (cluster.size > bestCluster.size || (cluster.size == bestCluster.size && weight > bestWeight)) {
+                bestCluster = cluster
+                bestWeight = weight
             }
+        }
+        if (bestCluster.size >= 2) {
+            val totalW = bestCluster.sumOf {
+                val c = it.confidence.toDouble().coerceAtLeast(0.05)
+                c * c
+            }
+            val weightedSum = bestCluster.sumOf {
+                val c = it.confidence.toDouble().coerceAtLeast(0.05)
+                it.offsetMs * c * c
+            }
+            return (weightedSum / totalW).roundToLong()
         }
 
-        val sorted = windows.sortedBy { it.offsetMs }
-        val totalWeight = sorted.sumOf { it.confidence.toDouble().coerceAtLeast(0.05) }
-        var acc = 0.0
-        for (w in sorted) {
-            acc += w.confidence.toDouble().coerceAtLeast(0.05)
-            if (acc >= totalWeight / 2.0) return w.offsetMs
-        }
-        return sorted[sorted.size / 2].offsetMs
+        // No 2 windows agree closely: trust the strongest individual peak rather than a weak median
+        return windows.maxBy {
+            val c = it.confidence.toDouble().coerceAtLeast(0.05)
+            c * c * (1.0 + it.peakProminence * 0.20)
+        }.offsetMs
     }
 
     /**
@@ -165,7 +173,7 @@ object SyncAnalyzer {
 
         // Only trust reliable windows so a single noisy low-confidence action scene cannot trigger false drift!
         val maxConf = windows.maxOf { it.confidence }
-        val minAllowedConf = maxOf(0.40f, maxConf * 0.55f)
+        val minAllowedConf = maxOf(0.42f, maxConf * 0.58f)
         val reliable = windows
             .filter { it.confidence >= minAllowedConf }
             .sortedBy { it.window.centerMs }
@@ -235,11 +243,24 @@ object SyncAnalyzer {
             )
         }
 
-        // Linear fit is valid if slope is meaningful and residual deviation is small relative to spread
-        val isLinear = (reliable.size == 2 && absSlope >= 1_200.0) ||
-            (reliable.size >= 3 && maxResidualMs <= maxOf(500.0, spreadMs * 0.22) && absSlope >= 1_200.0)
+        // Only consider a linear fit valid when:
+        // - 3+ checkpoints follow a straight line tightly, OR
+        // - 2 high-confidence checkpoints (>= 62%) separated by >= 12 min match a known cinema FPS slope.
+        val isFpsRatioSlope = absSlope in 2_200.0..5_500.0 || absSlope in 120_000.0..185_000.0
+        val timeSpanMs = (xs.max() - xs.min())
+        val isGeometricallyLinear = when {
+            reliable.size >= 3 -> maxResidualMs <= maxOf(450.0, spreadMs * 0.20) && absSlope >= 1_200.0
+            reliable.size == 2 -> reliable.minOf { it.confidence } >= 0.62f &&
+                timeSpanMs >= 720_000.0 &&
+                isFpsRatioSlope
+            else -> false
+        }
 
-        val (causeKey, causeText, fpsLabel) = classifyDriftCause(absSlope, spreadMs, isLinear, slopeMsPerMs)
+        val (causeKey, causeText, fpsLabel) = classifyDriftCause(absSlope, spreadMs, isGeometricallyLinear, slopeMsPerMs)
+
+        // Never auto-enable linear FPS stretch for scene cuts (DIFFERENT_CUT) or unexplained gradual shifts!
+        val isVerifiedFpsStretch = isGeometricallyLinear &&
+            (causeKey == DriftCauseKey.FPS_23976_VS_25 || causeKey == DriftCauseKey.FPS_23976_VS_24)
 
         return DriftAssessment(
             severity = severity,
@@ -250,7 +271,7 @@ object SyncAnalyzer {
             anchorTimeMs = meanX.roundToLong(),
             anchorOffsetMs = meanY.roundToLong(),
             speedRatio = 1.0 + slopeMsPerMs,
-            isLinearStretch = isLinear,
+            isLinearStretch = isVerifiedFpsStretch,
             detectedFpsLabel = fpsLabel,
         )
     }

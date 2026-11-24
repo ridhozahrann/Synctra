@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.2
+- Fixed false auto-enabled FPS drift stretch in `SyncAnalyzer.assessDrift` when only 2 checkpoints passed or when the shift was a non-FPS scene cut (`DIFFERENT_CUT` / `GRADUAL_SHIFT`), preventing exported `.srt` timestamps from being warped out of sync.
+- Made `FpsStretchMatcher` outlier-resistant using cluster-based scoring so a single noisy checkpoint cannot strip 1.0x agreement and trigger a false cinema FPS match.
+- Upgraded `SyncAnalyzer.computeConsensusOffset` to use squared-confidence cluster voting with strongest-peak fallback instead of letting weak noise peaks win via median.
+- Added lightweight joint multi-window pooled correlation (`FftCrossCorrelator.correlateJointly`, ~2–5 ms CPU, zero extra decoding) to lock onto the true shared offset when individual windows have heavy BGM/SFX noise.
+- Anchored extracted `SampleWindow.durationMs` to the exact decoded envelope length in `AudioSampleExtractor`.
+
 ## v1.3.1
 - Fixed `AudioPreviewPlayer` getting stuck showing "Loading audio..." when replaying a buffered clip, and added automatic recovery from `STATE_IDLE` after playback errors.
 - Added cooperative cancellation inside `AudioSampleExtractor` so tapping Cancel stops background audio decoding immediately.

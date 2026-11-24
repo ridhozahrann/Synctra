@@ -72,4 +72,16 @@ class SyncAnalyzerTest {
         assertNotNull(result.drift.suspectedCause)
         assertTrue(result.drift.suspectedCause!!.contains("25") && result.drift.suspectedCause!!.contains("23.976"))
     }
+
+    @Test
+    fun disagreeingWindowsTrustStrongestPeakOverWeakMedian() {
+        val windows = listOf(
+            WindowSyncResult(SampleWindow(0, "Awal", 1_200_000L, 90_000L), offsetMs = -40_000L, confidence = 0.34f, peakProminence = 2.0f, speechRatio = 0.25f),
+            WindowSyncResult(SampleWindow(1, "Tengah", 3_000_000L, 90_000L), offsetMs = -18_500L, confidence = 0.36f, peakProminence = 2.1f, speechRatio = 0.28f),
+            WindowSyncResult(SampleWindow(2, "Akhir", 4_800_000L, 90_000L), offsetMs = 4_000L, confidence = 0.78f, peakProminence = 6.2f, speechRatio = 0.45f),
+        )
+
+        val consensus = SyncAnalyzer.computeConsensusOffset(windows)
+        assertEquals("Strongest peak (+4000ms) must win over weak median (-18500ms)", 4_000L, consensus)
+    }
 }

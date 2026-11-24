@@ -169,6 +169,200 @@ object FftCrossCorrelator {
         )
     }
 
+    /**
+     * Joint multi-window pooled correlation for constant-offset movies where individual windows
+     * have heavy BGM/SFX noise. Sums normalized coarse correlation curves across all windows so
+     * the true shared offset adds constructively while random local noise peaks cancel out.
+     *
+     * Runs purely on the already-extracted 50 Hz envelopes (~2-5 ms CPU, zero extra decoding).
+     * Returns null if windows do not share a prominent common peak.
+     */
+    fun correlateJointly(
+        windows: List<WindowAudioInput>,
+        dialogueCues: List<SubtitleCue>,
+        maxLagMs: Long = 60_000L,
+    ): List<WindowSyncResult>? {
+        if (windows.size < 2 || dialogueCues.isEmpty()) return null
+
+        val maxLagFrames = (maxLagMs / FRAME_MS).toInt().coerceAtLeast(1)
+        val coarseMaxLag = (maxLagFrames / COARSE_DECIMATION).coerceAtLeast(1)
+        val coarseLen = 2 * coarseMaxLag + 1
+
+        data class PreparedWindow(
+            val input: WindowAudioInput,
+            val speechRatio: Float,
+            val weight: Double,
+            val subEnvelope: FloatArray,
+            val coarseCorr: DoubleArray,
+        )
+
+        val prepared = ArrayList<PreparedWindow>(windows.size)
+        for (input in windows) {
+            val env = input.speechEnvelope
+            if (env.size < 25) continue
+            val speechRatio = env.count { it >= 0.45f }.toFloat() / env.size
+            val subOriginMs = input.window.startMs - maxLagFrames.toLong() * FRAME_MS
+            val subTotalFrames = env.size + 2 * maxLagFrames
+            val subEnv = buildSubtitleEnvelope(dialogueCues, subOriginMs, subTotalFrames, FRAME_MS)
+
+            var subSum = 0.0
+            for (v in subEnv) subSum += v
+            if (subSum < 5.0) continue
+
+            val coarseAudio = downsample(env, COARSE_DECIMATION)
+            val coarseSub = downsample(subEnv, COARSE_DECIMATION)
+            val coarseCorr = computeNormalizedFftCorrelation(coarseAudio, coarseSub, coarseMaxLag)
+            val weight = speechRatio.coerceIn(0.08f, 0.65f).toDouble()
+            prepared.add(PreparedWindow(input, speechRatio, weight, subEnv, coarseCorr))
+        }
+
+        if (prepared.size < 2) return null
+
+        val totalWeight = prepared.sumOf { it.weight }.coerceAtLeast(1e-6)
+        val pooledCoarse = DoubleArray(coarseLen)
+        for (pw in prepared) {
+            val w = pw.weight / totalWeight
+            for (i in 0 until coarseLen) {
+                pooledCoarse[i] += pw.coarseCorr[i] * w
+            }
+        }
+
+        val topPooledLags = selectTopPeaks(
+            scores = pooledCoarse,
+            maxLagBins = coarseMaxLag,
+            topK = 3,
+            minSeparationBins = 15,
+        )
+
+        var bestJointLag = 0
+        var bestJointScore = -2.0
+        val fineRadius = 25 // +/- 0.5s around each 100ms coarse peak
+
+        for (coarseLag in topPooledLags) {
+            val center = coarseLag * COARSE_DECIMATION
+            val lo = (center - fineRadius).coerceAtLeast(-maxLagFrames)
+            val hi = (center + fineRadius).coerceAtMost(maxLagFrames)
+            for (lag in lo..hi) {
+                var sum = 0.0
+                for (pw in prepared) {
+                    val s = exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, lag)
+                    sum += s * pw.weight
+                }
+                val score = sum / totalWeight
+                if (score > bestJointScore) {
+                    bestJointScore = score
+                    bestJointLag = lag
+                }
+            }
+        }
+
+        // Measure prominence of the pooled peak against pooled background (> 3s away)
+        val bestCoarseIdx = ((bestJointLag / COARSE_DECIMATION) + coarseMaxLag).coerceIn(0, coarseLen - 1)
+        var bgSum = 0.0
+        var bgSqSum = 0.0
+        var bgCount = 0
+        for (i in 0 until coarseLen) {
+            if (abs(i - bestCoarseIdx) > 30) {
+                val v = pooledCoarse[i]
+                bgSum += v
+                bgSqSum += v * v
+                bgCount++
+            }
+        }
+        val bgMean = if (bgCount > 0) bgSum / bgCount else 0.0
+        val bgStd = if (bgCount > 1) {
+            sqrt(((bgSqSum / bgCount) - bgMean * bgMean).coerceAtLeast(1e-6))
+        } else {
+            0.12
+        }
+        val jointProminence = (((bestJointScore - bgMean) / bgStd).toFloat()).coerceAtLeast(0f)
+
+        if (bestJointScore < 0.12 || jointProminence < 3.0f) {
+            return null
+        }
+
+        // Locally refine each window within +/- 300ms around the pooled lag
+        val localRadius = 15 // +/- 300ms
+        var supportingWindows = 0
+        val resultsByIndex = HashMap<Int, WindowSyncResult>(prepared.size)
+
+        for (pw in prepared) {
+            val lo = (bestJointLag - localRadius).coerceAtLeast(-maxLagFrames)
+            val hi = (bestJointLag + localRadius).coerceAtMost(maxLagFrames)
+            var bestLocalLag = bestJointLag
+            var bestLocalScore = -2.0
+            val localScores = HashMap<Int, Double>(hi - lo + 1)
+
+            for (lag in lo..hi) {
+                val sc = exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, lag)
+                localScores[lag] = sc
+                if (sc > bestLocalScore) {
+                    bestLocalScore = sc
+                    bestLocalLag = lag
+                }
+            }
+
+            val yMinus = localScores[bestLocalLag - 1]
+                ?: exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, (bestLocalLag - 1).coerceAtLeast(-maxLagFrames))
+            val yZero = bestLocalScore
+            val yPlus = localScores[bestLocalLag + 1]
+                ?: exactPearsonAtLag(pw.input.speechEnvelope, pw.subEnvelope, maxLagFrames, (bestLocalLag + 1).coerceAtMost(maxLagFrames))
+            val denom = yMinus - 2.0 * yZero + yPlus
+            val delta = if (abs(denom) > 1e-9 && yZero >= yMinus && yZero >= yPlus) {
+                (0.5 * (yMinus - yPlus) / denom).coerceIn(-0.5, 0.5)
+            } else {
+                0.0
+            }
+            val refinedMs = ((bestLocalLag + delta) * FRAME_MS).toLong()
+
+            // Local prominence against this window's own background
+            val localCoarseIdx = ((bestLocalLag / COARSE_DECIMATION) + coarseMaxLag).coerceIn(0, coarseLen - 1)
+            var wBgSum = 0.0
+            var wBgSq = 0.0
+            var wBgCnt = 0
+            for (i in 0 until coarseLen) {
+                if (abs(i - localCoarseIdx) > 30) {
+                    val v = pw.coarseCorr[i]
+                    wBgSum += v
+                    wBgSq += v * v
+                    wBgCnt++
+                }
+            }
+            val wMean = if (wBgCnt > 0) wBgSum / wBgCnt else 0.0
+            val wStd = if (wBgCnt > 1) sqrt(((wBgSq / wBgCnt) - wMean * wMean).coerceAtLeast(1e-6)) else 0.15
+            val localProm = (((bestLocalScore - wMean) / wStd).toFloat()).coerceAtLeast(0f)
+
+            if (bestLocalScore >= 0.09 && localProm >= 1.6f) {
+                supportingWindows++
+            }
+
+            val effectiveProm = maxOf(localProm, jointProminence * 0.75f)
+            val corrTerm = ((bestLocalScore - 0.06) / 0.42).coerceIn(0.0, 1.0)
+            val promTerm = ((effectiveProm - 1.8) / 4.2).coerceIn(0.0, 1.0)
+            val conf = (0.45 * corrTerm + 0.55 * promTerm).toFloat().coerceIn(0f, 0.92f)
+
+            resultsByIndex[pw.input.window.index] = WindowSyncResult(
+                window = pw.input.window,
+                offsetMs = refinedMs,
+                confidence = conf,
+                peakProminence = effectiveProm,
+                speechRatio = pw.speechRatio,
+            )
+        }
+
+        if (supportingWindows < 2) return null
+
+        return windows.map { input ->
+            resultsByIndex[input.window.index] ?: WindowSyncResult(
+                window = input.window,
+                offsetMs = bestJointLag.toLong() * FRAME_MS,
+                confidence = 0f,
+                peakProminence = 0f,
+                speechRatio = 0f,
+            )
+        }
+    }
+
     internal fun buildSubtitleEnvelope(
         cues: List<SubtitleCue>,
         originMs: Long,
