@@ -29,6 +29,7 @@ class SyncHistoryStore(context: Context) {
                             offsetMs = obj.optLong("offsetMs", 0L),
                             hasDrift = obj.optBoolean("hasDrift", false),
                             checkedAtEpochMs = obj.optLong("checkedAtEpochMs", 0L),
+                            audioTrackIndex = obj.optInt("audioTrackIndex", 0),
                         )
                     )
                 }
@@ -37,13 +38,7 @@ class SyncHistoryStore(context: Context) {
     }
 
     fun addEntry(entry: SyncHistoryEntry): List<SyncHistoryEntry> {
-        val updated = buildList {
-            add(entry)
-            loadHistory()
-                .filterNot { it.videoName == entry.videoName && it.subtitleName == entry.subtitleName }
-                .take(MAX_ENTRIES - 1)
-                .forEach { add(it) }
-        }
+        val updated = mergeEntries(loadHistory(), entry, MAX_ENTRIES)
         saveList(updated)
         return updated
     }
@@ -74,6 +69,7 @@ class SyncHistoryStore(context: Context) {
                     put("offsetMs", e.offsetMs)
                     put("hasDrift", e.hasDrift)
                     put("checkedAtEpochMs", e.checkedAtEpochMs)
+                    put("audioTrackIndex", e.audioTrackIndex)
                 }
             )
         }
@@ -84,6 +80,23 @@ class SyncHistoryStore(context: Context) {
         private const val PREFS_NAME = "synctra_prefs"
         private const val KEY_HISTORY = "recent_history_v1"
         private const val KEY_LANG = "ui_language"
-        private const val MAX_ENTRIES = 6
+        const val MAX_ENTRIES = 20
+
+        internal fun mergeEntries(
+            existing: List<SyncHistoryEntry>,
+            entry: SyncHistoryEntry,
+            maxEntries: Int = MAX_ENTRIES,
+        ): List<SyncHistoryEntry> = buildList {
+            add(entry)
+            existing
+                .filterNot {
+                    it.videoName == entry.videoName &&
+                        it.subtitleName == entry.subtitleName &&
+                        it.audioTrackIndex == entry.audioTrackIndex &&
+                        it.audioTrackTitle == entry.audioTrackTitle
+                }
+                .take((maxEntries - 1).coerceAtLeast(0))
+                .forEach { add(it) }
+        }
     }
 }

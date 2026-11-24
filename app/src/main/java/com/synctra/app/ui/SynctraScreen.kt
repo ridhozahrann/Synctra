@@ -215,6 +215,10 @@ fun SynctraScreen(
                 selectedAudioIndex = state.selectedAudioTrackIndex,
                 subtitleName = state.subtitleFile?.displayName,
                 subtitleMeta = subtitleMetaLine,
+                selectedEncoding = state.selectedEncoding,
+                detectedEncodingName = state.parsedSubtitle?.encodingName,
+                subtitlePreviewCues = state.cleanedPreviewStats?.dialogueCues?.take(3)
+                    ?: state.parsedSubtitle?.allCues?.take(3).orEmpty(),
                 enabled = !state.isAnalyzing,
                 onPickVideo = {
                     videoPicker.launch(
@@ -237,6 +241,7 @@ fun SynctraScreen(
                         )
                     )
                 },
+                onSelectEncoding = { viewModel.onSubtitleEncodingSelected(it) },
             )
 
             // Primary Action or Progress Strip

@@ -252,4 +252,5 @@ data class SyncHistoryEntry(
     val offsetMs: Long,
     val hasDrift: Boolean,
     val checkedAtEpochMs: Long,
+    val audioTrackIndex: Int = 0,
 )

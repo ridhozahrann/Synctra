@@ -128,4 +128,41 @@ class SubtitleParserTest {
         assertEquals("Baris dialog valid.", parsed.allCues[0].cleanText)
         assertEquals(10_000L, parsed.allCues[0].startMs)
     }
+
+    @Test
+    fun autoDetectsShiftJisEucKrGbkBig5CyrillicArabicAndWindows1252() {
+        val fixtures = listOf(
+            "Shift_JIS" to "1\r\n00:00:05,000 --> 00:00:08,000\r\nおはようございます。今日はいい天気ですね。\r\n\r\n2\r\n00:00:10,000 --> 00:00:13,000\r\n映画を見に行きましょう！\r\n",
+            "EUC-KR" to "1\r\n00:00:05,000 --> 00:00:08,000\r\n안녕하세요. 오늘 날씨가 정말 좋네요.\r\n\r\n2\r\n00:00:10,000 --> 00:00:13,000\r\n우리 같이 영화 보러 갈까요?\r\n",
+            "GBK" to "1\r\n00:00:05,000 --> 00:00:08,000\r\n你好，今天天气非常好，我们出发吧。\r\n\r\n2\r\n00:00:10,000 --> 00:00:13,000\r\n这部电影的声音和字幕完全同步了。\r\n",
+            "Big5" to "1\r\n00:00:05,000 --> 00:00:08,000\r\n歡迎來到這裡，請大家準備開始。\r\n\r\n2\r\n00:00:10,000 --> 00:00:13,000\r\n這部電影的翻譯非常精彩。\r\n",
+            "windows-1251" to "1\r\n00:00:05,000 --> 00:00:08,000\r\nПривет, как твои дела сегодня?\r\n\r\n2\r\n00:00:10,000 --> 00:00:13,000\r\nМы должны успеть на последний поезд.\r\n",
+            "windows-1256" to "1\r\n00:00:05,000 --> 00:00:08,000\r\nمرحبا بكم في هذا الفيلم الرائع.\r\n\r\n2\r\n00:00:10,000 --> 00:00:13,000\r\nهل أنت مستعد للذهاب الآن؟\r\n",
+            "windows-1252" to "1\r\n00:00:05,000 --> 00:00:08,000\r\nCafé señor, don’t forget the résumé!\r\n\r\n2\r\n00:00:10,000 --> 00:00:13,000\r\n¿Dónde está el niño?\r\n",
+        )
+
+        for ((charsetName, srtText) in fixtures) {
+            val charset = java.nio.charset.Charset.forName(charsetName)
+            val bytes = srtText.toByteArray(charset)
+            val parsed = SubtitleParser.parse(bytes, "sample_$charsetName.srt")
+            assertEquals("Expected 2 cues for $charsetName", 2, parsed.allCues.size)
+            val expectedLine1 = srtText.lines()[2]
+            assertEquals(
+                "Auto-detected encoding '${parsed.encodingName}' decoded '$charsetName' incorrectly",
+                expectedLine1,
+                parsed.allCues[0].cleanText,
+            )
+        }
+    }
+
+    @Test
+    fun respectsExplicitForcedCharsetOverride() {
+        val jpSrt = "1\r\n00:00:02,000 --> 00:00:05,000\r\n東京タワーへ行く。\r\n"
+        val bytes = jpSrt.toByteArray(java.nio.charset.Charset.forName("Shift_JIS"))
+
+        val parsed = SubtitleParser.parse(bytes, "jp.srt", forcedCharsetName = "Shift_JIS")
+        assertEquals("Shift_JIS", parsed.encodingName)
+        assertEquals(1, parsed.allCues.size)
+        assertEquals("東京タワーへ行く。", parsed.allCues[0].cleanText)
+    }
 }

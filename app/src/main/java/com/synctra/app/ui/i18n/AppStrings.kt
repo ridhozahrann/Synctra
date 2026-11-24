@@ -76,6 +76,8 @@ data class AppStrings(
     val stepCorrelatingDetail: String,
     val stepExpanding: String,
     val stepExpandingDetail: String,
+    val encodingLabel: String,
+    val encodingPreviewLabel: String,
 ) {
     fun confidenceLabel(level: ConfidenceLevel): String = when (language) {
         AppLanguage.ID -> when (level) {
@@ -219,6 +221,8 @@ object AppStringsProvider {
         stepCorrelatingDetail = "Korelasi suara vs subtitle & deteksi drift FPS",
         stepExpanding = "Memperluas pencarian (±2 menit)",
         stepExpandingDetail = "Mencari kemungkinan selisih besar hingga ±120 detik",
+        encodingLabel = "Encoding",
+        encodingPreviewLabel = "Pratinjau 3 baris awal",
     )
 
     private val english = AppStrings(
@@ -284,5 +288,7 @@ object AppStringsProvider {
         stepCorrelatingDetail = "Correlating speech vs subtitles & checking FPS drift",
         stepExpanding = "Expanding search (±2 min)",
         stepExpandingDetail = "Scanning wider offsets up to ±120 seconds",
+        encodingLabel = "Encoding",
+        encodingPreviewLabel = "First 3 lines preview",
     )
 }

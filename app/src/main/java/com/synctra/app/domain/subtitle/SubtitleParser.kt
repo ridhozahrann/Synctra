@@ -8,9 +8,21 @@ import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
 
+enum class SubtitleEncodingOption(val label: String, val charsetName: String?) {
+    AUTO("Auto", null),
+    UTF_8("UTF-8", "UTF-8"),
+    SHIFT_JIS("Shift-JIS", "Shift_JIS"),
+    EUC_KR("EUC-KR", "EUC-KR"),
+    GBK("GBK", "GBK"),
+    BIG5("Big5", "Big5"),
+    WINDOWS_1252("Win-1252", "windows-1252"),
+    WINDOWS_1251("Win-1251", "windows-1251"),
+    WINDOWS_1256("Win-1256", "windows-1256"),
+}
+
 /**
  * Lightweight, zero-dependency parser for SRT, ASS/SSA, and WebVTT subtitle files.
- * Handles UTF-8 (with or without BOM), UTF-16, and Windows-1252/ISO-8859-1 fallback.
+ * Handles UTF-8 (with or without BOM), UTF-16, and auto-detects legacy CJK/Cyrillic/Arabic/Latin encodings.
  */
 object SubtitleParser {
 
@@ -24,8 +36,22 @@ object SubtitleParser {
     private val assOverrideRegex = Regex("""\{[^}]*\}""")
     private val whitespaceRegex = Regex("""[ \t]+""")
 
-    fun parse(bytes: ByteArray, fileName: String? = null): ParsedSubtitleFile {
-        val (text, encoding) = decodeBytes(bytes)
+    private val fallbackCandidateCharsets = listOf(
+        "Shift_JIS",
+        "EUC-KR",
+        "GBK",
+        "Big5",
+        "windows-1251",
+        "windows-1256",
+        "windows-1252",
+    )
+
+    fun parse(
+        bytes: ByteArray,
+        fileName: String? = null,
+        forcedCharsetName: String? = null,
+    ): ParsedSubtitleFile {
+        val (text, encoding) = decodeBytes(bytes, forcedCharsetName)
         val normalized = text
             .removePrefix("\uFEFF")
             .replace("\r\n", "\n")
@@ -54,7 +80,21 @@ object SubtitleParser {
         )
     }
 
-    internal fun decodeBytes(bytes: ByteArray): Pair<String, String> {
+    internal fun decodeBytes(
+        bytes: ByteArray,
+        forcedCharsetName: String? = null,
+    ): Pair<String, String> {
+        if (!forcedCharsetName.isNullOrBlank()) {
+            val charset = runCatching { Charset.forName(forcedCharsetName) }
+                .getOrDefault(Charsets.UTF_8)
+            val offset = when {
+                charset == Charsets.UTF_8 && bytes.size >= 3 &&
+                    bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() -> 3
+                else -> 0
+            }
+            return String(bytes, offset, bytes.size - offset, charset) to charset.name()
+        }
+
         if (bytes.size >= 3 &&
             bytes[0] == 0xEF.toByte() &&
             bytes[1] == 0xBB.toByte() &&
@@ -69,16 +109,229 @@ object SubtitleParser {
             return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE) to "UTF-16BE"
         }
 
-        return try {
+        try {
             val decoder = Charsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
-            decoder.decode(ByteBuffer.wrap(bytes)).toString() to "UTF-8"
+            return decoder.decode(ByteBuffer.wrap(bytes)).toString() to "UTF-8"
         } catch (_: CharacterCodingException) {
-            val cp1252 = runCatching { Charset.forName("windows-1252") }
-                .getOrDefault(Charsets.ISO_8859_1)
-            String(bytes, cp1252) to cp1252.name()
+            // Fall through to legacy charset scoring
         }
+
+        return detectLegacyCharset(bytes)
+    }
+
+    private fun detectLegacyCharset(bytes: ByteArray): Pair<String, String> {
+        // Score on a bounded prefix (up to 64 KB) for speed on huge subtitle files
+        val sampleLen = minOf(bytes.size, 65_536)
+        var bestCharset: Charset? = null
+        var bestScore = Double.NEGATIVE_INFINITY
+
+        for (name in fallbackCandidateCharsets) {
+            val charset = runCatching { Charset.forName(name) }.getOrNull() ?: continue
+            val isMultiByte = name == "Shift_JIS" || name == "EUC-KR" || name == "GBK" || name == "Big5"
+
+            val strictDecoded = runCatching {
+                charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes, 0, sampleLen))
+                    .toString()
+            }.getOrNull()
+
+            val decodedSample = strictDecoded ?: runCatching {
+                charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPLACE)
+                    .onUnmappableCharacter(CodingErrorAction.REPLACE)
+                    .decode(ByteBuffer.wrap(bytes, 0, sampleLen))
+                    .toString()
+            }.getOrNull() ?: continue
+
+            val score = scoreDecodedText(
+                text = decodedSample,
+                charsetName = name,
+                isMultiByte = isMultiByte,
+                strictValid = strictDecoded != null,
+            )
+            if (score > bestScore) {
+                bestScore = score
+                bestCharset = charset
+            }
+        }
+
+        val chosen = bestCharset ?: runCatching { Charset.forName("windows-1252") }
+            .getOrDefault(Charsets.ISO_8859_1)
+        val fullText = chosen.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPLACE)
+            .onUnmappableCharacter(CodingErrorAction.REPLACE)
+            .decode(ByteBuffer.wrap(bytes))
+            .toString()
+        return fullText to chosen.name()
+    }
+
+    private fun scoreDecodedText(
+        text: String,
+        charsetName: String,
+        isMultiByte: Boolean,
+        strictValid: Boolean,
+    ): Double {
+        var asciiLetters = 0
+        var nonAsciiChars = 0
+        var replacementCount = 0
+        var controlCount = 0
+        var hiraganaKatakana = 0
+        var hangul = 0
+        var cjkIdeographs = 0
+        var cjkPunctuation = 0
+        var halfwidthKatakana = 0
+        var cyrillicLower = 0
+        var cyrillicUpper = 0
+        var cyrillicMidWordUpper = 0
+        var arabicLetters = 0
+        var arabicDiacritics = 0
+        var latinExtended = 0
+        var smartPunctuation = 0
+        var otherNonAscii = 0
+
+        var prevWasCyrillicLower = false
+
+        for (ch in text) {
+            val code = ch.code
+            if (code < 0x80) {
+                if (ch in 'a'..'z' || ch in 'A'..'Z') asciiLetters++
+                if (code < 0x20 && ch != '\n' && ch != '\r' && ch != '\t') controlCount++
+                prevWasCyrillicLower = false
+                continue
+            }
+
+            nonAsciiChars++
+            when {
+                ch == '\uFFFD' -> {
+                    replacementCount++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x007F..0x009F -> {
+                    controlCount++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x3040..0x30FF -> {
+                    hiraganaKatakana++
+                    prevWasCyrillicLower = false
+                }
+                code in 0xAC00..0xD7A3 -> {
+                    hangul++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x4E00..0x9FFF -> {
+                    cjkIdeographs++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x3000..0x303F || code in 0xFF01..0xFF60 -> {
+                    cjkPunctuation++
+                    prevWasCyrillicLower = false
+                }
+                code in 0xFF61..0xFF9F -> {
+                    halfwidthKatakana++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x0430..0x044F || ch == 'ё' -> {
+                    cyrillicLower++
+                    prevWasCyrillicLower = true
+                }
+                code in 0x0410..0x042F || ch == 'Ё' -> {
+                    cyrillicUpper++
+                    if (prevWasCyrillicLower) cyrillicMidWordUpper++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x0621..0x064A || code in 0x0671..0x06D3 -> {
+                    arabicLetters++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x064B..0x065F -> {
+                    arabicDiacritics++
+                    prevWasCyrillicLower = false
+                }
+                code in 0x00C0..0x024F -> {
+                    latinExtended++
+                    prevWasCyrillicLower = false
+                }
+                ch in "\u2018\u2019\u201C\u201D\u2013\u2014\u2026\u00A0\u00AB\u00BB\u00BF\u00A1" -> {
+                    smartPunctuation++
+                    prevWasCyrillicLower = false
+                }
+                else -> {
+                    otherNonAscii++
+                    prevWasCyrillicLower = false
+                }
+            }
+        }
+
+        if (nonAsciiChars == 0) return if (charsetName == "windows-1252") 1.0 else 0.0
+
+        val totalLetters = (asciiLetters + nonAsciiChars).coerceAtLeast(1)
+        val nonAsciiShare = nonAsciiChars.toDouble() / totalLetters
+
+        var score = 0.0
+        score -= replacementCount * 10.0
+        score -= controlCount * 8.0
+        score -= otherNonAscii * 2.5
+
+        if (isMultiByte) {
+            if (strictValid) {
+                score += nonAsciiChars * 0.9 + 6.0
+            } else {
+                score -= 12.0
+            }
+            score += hiraganaKatakana * 5.0
+            score += hangul * 5.0
+            score += cjkIdeographs * 2.4
+            score += cjkPunctuation * 1.8
+            // Halfwidth katakana appears frequently in mojibake when non-SJIS bytes are decoded as Shift_JIS
+            score -= halfwidthKatakana * 2.2
+            // Small preference for GBK over Big5 only when tied on pure Hanzi without malformed bytes
+            if (charsetName == "GBK" && strictValid) score += 0.2
+            // Penalize CJK candidates if text is overwhelmingly ASCII Latin with only a few accented chars
+            if (nonAsciiShare < 0.12 && hiraganaKatakana == 0 && hangul == 0) {
+                score -= 15.0
+            }
+        } else {
+            when (charsetName) {
+                "windows-1252" -> {
+                    score += smartPunctuation * 2.5
+                    // Western Latin files mostly contain ASCII letters with occasional accents (< 35% non-ASCII)
+                    if (nonAsciiShare < 0.35) {
+                        score += latinExtended * 3.0 + smartPunctuation * 1.5
+                    } else {
+                        // Dense non-ASCII (> 45%) in windows-1252 is almost always Cyrillic/Arabic/CJK mojibake
+                        score += latinExtended * 0.4 - nonAsciiChars * 1.2
+                    }
+                }
+                "windows-1251" -> {
+                    val cyrTotal = cyrillicLower + cyrillicUpper
+                    score += cyrTotal * 2.6
+                    // Mixed uppercase inside lowercase words strongly indicates non-Cyrillic bytes (e.g. Arabic)
+                    score -= cyrillicMidWordUpper * 5.0
+                    if (cyrTotal > 0 && cyrillicUpper > cyrillicLower * 1.5) {
+                        score -= cyrillicUpper * 1.5
+                    }
+                    if (nonAsciiShare < 0.25) {
+                        score -= 10.0
+                    }
+                }
+                "windows-1256" -> {
+                    score += arabicLetters * 2.8
+                    // Genuine Arabic subtitles have few Latin-extended leftovers and moderate diacritics
+                    score -= latinExtended * 3.0
+                    score -= arabicDiacritics * 0.6
+                    if (nonAsciiShare < 0.25) {
+                        score -= 10.0
+                    }
+                }
+            }
+        }
+
+        // Normalize gently so multi-byte (fewer output chars per byte) and single-byte remain directly comparable
+        return score / nonAsciiChars.coerceAtLeast(1)
     }
 
     internal fun detectFormat(content: String, fileName: String?): SubtitleFormat {

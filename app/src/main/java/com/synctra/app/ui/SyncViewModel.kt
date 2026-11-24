@@ -22,6 +22,7 @@ import com.synctra.app.domain.model.SyncProgress
 import com.synctra.app.domain.model.SyncResult
 import com.synctra.app.domain.subtitle.SrtExporter
 import com.synctra.app.domain.subtitle.SubtitleCleaner
+import com.synctra.app.domain.subtitle.SubtitleEncodingOption
 import com.synctra.app.domain.subtitle.SubtitleParser
 import com.synctra.app.domain.sync.FpsStretchMatcher
 import com.synctra.app.domain.sync.SyncAnalyzer
@@ -50,6 +51,7 @@ data class SynctraUiState(
     val isProbingVideo: Boolean = false,
     val selectedAudioTrackIndex: Int = 0,
     val subtitleFile: SelectedFileInfo? = null,
+    val selectedEncoding: SubtitleEncodingOption = SubtitleEncodingOption.AUTO,
     val parsedSubtitle: ParsedSubtitleFile? = null,
     val cleanedPreviewStats: CleanedSubtitleSet? = null,
     val isAnalyzing: Boolean = false,
@@ -88,6 +90,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     )
     private var analysisJob: Job? = null
     private var pendingExportOptions: ExportSrtOptions? = null
+    private var lastSubtitleBytes: ByteArray? = null
 
     val uiState: StateFlow<SynctraUiState> = combine(
         internalState,
@@ -120,6 +123,11 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         internalState.update { it.copy(language = next) }
     }
 
+    private fun recomputeCleaning(
+        parsed: ParsedSubtitleFile?,
+        mediaDurationMs: Long,
+    ): CleanedSubtitleSet? = parsed?.let { SubtitleCleaner.clean(it, mediaDurationMs = mediaDurationMs) }
+
     fun onVideoSelected(uri: Uri) {
         previewPlayer.stop()
         analysisJob?.cancel()
@@ -149,6 +157,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                             videoMeta = meta,
                             isProbingVideo = false,
                             selectedAudioTrackIndex = meta.defaultAudioIndex,
+                            cleanedPreviewStats = recomputeCleaning(state.parsedSubtitle, meta.durationMs)
+                                ?: state.cleanedPreviewStats,
                         )
                     } else {
                         state
@@ -191,25 +201,24 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                val (info, parsed, cleaned) = withContext(Dispatchers.IO) {
+                val (info, bytes, parsed) = withContext(Dispatchers.IO) {
                     val fileInfo = DocumentMetaReader.readInfo(appContext, uri)
-                    val bytes = DocumentMetaReader.readAllBytes(appContext, uri)
-                    val parsedSub = SubtitleParser.parse(bytes, fileInfo.displayName)
+                    val rawBytes = DocumentMetaReader.readAllBytes(appContext, uri)
+                    val parsedSub = SubtitleParser.parse(rawBytes, fileInfo.displayName)
                     if (parsedSub.allCues.isEmpty()) {
                         throw IllegalArgumentException(
                             "Tidak ada baris dialog yang valid. Pastikan formatnya .srt, .ass, atau .vtt."
                         )
                     }
-                    val cleanedSub = SubtitleCleaner.clean(
-                        parsedSub,
-                        mediaDurationMs = internalState.value.videoMeta?.durationMs ?: 0L,
-                    )
-                    Triple(fileInfo, parsedSub, cleanedSub)
+                    Triple(fileInfo, rawBytes, parsedSub)
                 }
 
-                internalState.update {
-                    it.copy(
+                lastSubtitleBytes = bytes
+                internalState.update { state ->
+                    val cleaned = recomputeCleaning(parsed, state.videoMeta?.durationMs ?: 0L)
+                    state.copy(
                         subtitleFile = info,
+                        selectedEncoding = SubtitleEncodingOption.AUTO,
                         parsedSubtitle = parsed,
                         cleanedPreviewStats = cleaned,
                         result = null,
@@ -227,11 +236,60 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun onSubtitleEncodingSelected(option: SubtitleEncodingOption) {
+        val state = internalState.value
+        val subFile = state.subtitleFile ?: return
+        if (option == state.selectedEncoding) return
+
+        previewPlayer.stop()
+        analysisJob?.cancel()
+
+        viewModelScope.launch {
+            try {
+                val parsed = withContext(Dispatchers.IO) {
+                    val bytes = lastSubtitleBytes ?: DocumentMetaReader.readAllBytes(appContext, subFile.uri).also {
+                        lastSubtitleBytes = it
+                    }
+                    val parsedSub = SubtitleParser.parse(
+                        bytes = bytes,
+                        fileName = subFile.displayName,
+                        forcedCharsetName = option.charsetName,
+                    )
+                    if (parsedSub.allCues.isEmpty()) {
+                        throw IllegalArgumentException(
+                            "Tidak ada baris dialog yang valid dengan encoding ${option.label}."
+                        )
+                    }
+                    parsedSub
+                }
+
+                internalState.update { cur ->
+                    val cleaned = recomputeCleaning(parsed, cur.videoMeta?.durationMs ?: 0L)
+                    cur.copy(
+                        selectedEncoding = option,
+                        parsedSubtitle = parsed,
+                        cleanedPreviewStats = cleaned,
+                        result = null,
+                        manualNudgeMs = 0L,
+                        errorMessage = null,
+                    )
+                }
+            } catch (e: Exception) {
+                internalState.update {
+                    it.copy(
+                        errorMessage = e.localizedMessage ?: "Gagal membaca subtitle dengan encoding ${option.label}.",
+                    )
+                }
+            }
+        }
+    }
+
     fun startAnalysis() {
         val current = internalState.value
         val videoFile = current.videoFile ?: return
         val subtitleFile = current.subtitleFile ?: return
         val chosenAudioIndex = current.selectedAudioTrackIndex
+        val chosenEncoding = current.selectedEncoding
         val strings = AppStringsProvider.get(current.language)
 
         previewPlayer.stop()
@@ -254,22 +312,33 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             try {
-                val result = withContext(Dispatchers.Default) {
+                val (result, analyzedTrackIndex) = withContext(Dispatchers.Default) {
                     val mediaInfo = current.videoMeta ?: audioExtractor.probeMedia(videoFile.uri)
                     val selectedTrack = mediaInfo.audioTracks.getOrNull(chosenAudioIndex)
                         ?: mediaInfo.primaryAudio
                         ?: throw IllegalStateException("No audio track found.")
 
                     val parsed = current.parsedSubtitle ?: run {
-                        val bytes = DocumentMetaReader.readAllBytes(appContext, subtitleFile.uri)
-                        SubtitleParser.parse(bytes, subtitleFile.displayName)
+                        val bytes = lastSubtitleBytes ?: DocumentMetaReader.readAllBytes(appContext, subtitleFile.uri).also {
+                            lastSubtitleBytes = it
+                        }
+                        SubtitleParser.parse(bytes, subtitleFile.displayName, chosenEncoding.charsetName)
                     }
                     if (parsed.allCues.size < 3) {
                         throw IllegalStateException("Subtitle file has too few dialogue lines.")
                     }
-                    val cleaned = SubtitleCleaner.clean(parsed, mediaInfo.durationMs)
+                    val cleaned = recomputeCleaning(parsed, mediaInfo.durationMs)
+                        ?: throw IllegalStateException("Failed to clean subtitle lines.")
                     if (cleaned.dialogueCues.size < 3) {
                         throw IllegalStateException("Not enough spoken dialogue after ad filtering.")
+                    }
+
+                    internalState.update {
+                        it.copy(
+                            videoMeta = mediaInfo,
+                            parsedSubtitle = parsed,
+                            cleanedPreviewStats = cleaned,
+                        )
                     }
 
                     val windows = WindowPlanner.planWindows(
@@ -290,8 +359,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         val winName = strings.windowShortLabel(idx, total)
                         internalState.update {
                             it.copy(
-                                videoMeta = mediaInfo,
-                                cleanedPreviewStats = cleaned,
                                 progress = SyncProgress(
                                     stepTitle = strings.stepSampling(idx + 1, total),
                                     stepDetail = "${selectedTrack.displayTitle} · $winName",
@@ -330,7 +397,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     val usedFfmpeg = extractedWindows.any { it.usedFfmpegDecoder }
                     val elapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1L)
 
-                    SyncAnalyzer.aggregate(
+                    val aggregated = SyncAnalyzer.aggregate(
                         windowResults = matchResult.windowResults,
                         cleanedSubtitles = cleaned,
                         audioCodecUsed = selectedTrack.technicalSummary,
@@ -340,6 +407,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         matchedFpsCandidate = matchResult.matchedFpsCandidate,
                         matchedBaseOffsetMs = matchResult.baseOffsetMs,
                     )
+                    aggregated to selectedTrack.audioIndex
                 }
 
                 val bestWinIdx = result.windowResults
@@ -355,6 +423,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         offsetMs = result.offsetMs,
                         hasDrift = result.drift.severity != DriftSeverity.NONE,
                         checkedAtEpochMs = System.currentTimeMillis(),
+                        audioTrackIndex = analyzedTrackIndex,
                     )
                 )
 

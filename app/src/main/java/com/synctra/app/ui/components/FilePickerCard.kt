@@ -22,6 +22,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,12 +35,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.synctra.app.domain.model.AudioTrackOption
+import com.synctra.app.domain.model.SubtitleCue
+import com.synctra.app.domain.subtitle.SubtitleEncodingOption
 import com.synctra.app.ui.i18n.AppStrings
 import com.synctra.app.ui.theme.SynctraColors
+import java.util.Locale
 
 /**
  * Unified grouped input panel for selecting the movie, audio track (when multiple exist),
- * and external subtitle file.
+ * external subtitle file, and optional subtitle encoding override with live preview.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -49,12 +56,18 @@ fun MediaInputSheet(
     selectedAudioIndex: Int,
     subtitleName: String?,
     subtitleMeta: String?,
+    selectedEncoding: SubtitleEncodingOption,
+    detectedEncodingName: String?,
+    subtitlePreviewCues: List<SubtitleCue>,
     enabled: Boolean,
     onPickVideo: () -> Unit,
     onSelectAudioTrack: (Int) -> Unit,
     onPickSubtitle: () -> Unit,
+    onSelectEncoding: (SubtitleEncodingOption) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showEncodingPicker by remember(subtitleName) { mutableStateOf(false) }
+
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -137,7 +150,138 @@ fun MediaInputSheet(
                 enabled = enabled,
                 onClick = onPickSubtitle,
             )
+
+            AnimatedVisibility(visible = subtitleName != null && detectedEncodingName != null) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(
+                        color = SynctraColors.Hairline,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = enabled) { showEncodingPicker = !showEncodingPicker }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = strings.encodingLabel,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = SynctraColors.InkMuted,
+                        )
+                        val activeBadge = if (selectedEncoding == SubtitleEncodingOption.AUTO) {
+                            "${SubtitleEncodingOption.AUTO.label} (${detectedEncodingName.orEmpty()})"
+                        } else {
+                            selectedEncoding.label
+                        }
+                        Text(
+                            text = "$activeBadge  ${if (showEncodingPicker) "▲" else "▼"}",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (showEncodingPicker || selectedEncoding != SubtitleEncodingOption.AUTO) {
+                                SynctraColors.Accent
+                            } else {
+                                SynctraColors.InkSecondary
+                            },
+                        )
+                    }
+
+                    AnimatedVisibility(visible = showEncodingPicker) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                SubtitleEncodingOption.entries.forEach { option ->
+                                    val isSelected = option == selectedEncoding
+                                    Surface(
+                                        onClick = { onSelectEncoding(option) },
+                                        enabled = enabled,
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSelected) SynctraColors.AccentDim else SynctraColors.SurfaceSubtle,
+                                        border = BorderStroke(
+                                            width = 1.dp,
+                                            color = if (isSelected) SynctraColors.Accent else SynctraColors.Hairline,
+                                        ),
+                                    ) {
+                                        Text(
+                                            text = option.label,
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                            color = if (isSelected) SynctraColors.Accent else SynctraColors.InkSecondary,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (subtitlePreviewCues.isNotEmpty()) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = SynctraColors.SurfaceSubtle,
+                                    border = BorderStroke(1.dp, SynctraColors.Hairline),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Text(
+                                            text = strings.encodingPreviewLabel,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = SynctraColors.InkMuted,
+                                        )
+                                        subtitlePreviewCues.take(3).forEach { cue ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Text(
+                                                    text = formatCompactCueTime(cue.startMs),
+                                                    fontSize = 11.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = SynctraColors.InkMuted,
+                                                )
+                                                Text(
+                                                    text = cue.cleanText.replace("\n", " "),
+                                                    fontSize = 12.sp,
+                                                    color = SynctraColors.InkPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+private fun formatCompactCueTime(ms: Long): String {
+    val totalSec = (ms / 1000L).coerceAtLeast(0L)
+    val h = totalSec / 3600L
+    val m = (totalSec % 3600L) / 60L
+    val s = totalSec % 60L
+    return if (h > 0L) {
+        String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+    } else {
+        String.format(Locale.US, "%02d:%02d", m, s)
     }
 }
 
