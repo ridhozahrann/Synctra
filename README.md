@@ -16,12 +16,12 @@ Instead of guessing subtitle delay values by trial and error inside VLC, MX Play
 
 ## How it works
 
-1. **Subtitle cleanup:** Parses `.srt`, `.ass`/`.ssa`, and `.vtt` files (UTF-8/BOM, UTF-16, Windows-1252) and flags website ads, translator credits, URLs, SDH cues (`[music]`, `♪`), and intro/outro edges before alignment.
-2. **Audio-only sampling:** Skips video decoding completely. If a container has multiple audio tracks (e.g. English and Hindi), you can choose which track to analyze and preview. For full-length movies, it seeks to three dialogue-dense 90-second segments in the interior (~20%, ~50%, ~75% of duration), avoiding intro logos and end credits.
-3. **Speech detection & correlation:** Runs a full-rate streaming voice-band detector (300–3400 Hz Butterworth bandpass + syllabic modulation, 20 ms frames, with Center-channel dialogue weighting on 5.1/7.1 tracks) and a two-stage Radix-2 FFT normalized cross-correlation (±60 s, auto-expanding to ±120 s) with parabolic peak refinement.
-4. **Drift check:** Compares offsets across the sampled checkpoints to flag progressive drift (e.g. 23.976 fps vs 25 fps or mismatched cuts).
+1. **Subtitle cleanup & encoding detection:** Parses `.srt`, `.ass`/`.ssa` (stripping `\p` vector drawings), and `.vtt` (skipping `NOTE` blocks) with automatic multi-charset detection (`UTF-8/BOM`, `UTF-16`, `Shift_JIS`, `EUC-KR`, `GBK`, `Big5`, `windows-1251`, `windows-1256`, `windows-1252`) plus an in-app encoding picker and 3-line live preview. Flags website ads, translator credits, URLs, SDH cues (`[music]`, `♪`), and intro/outro edges before alignment.
+2. **Audio-only sampling:** Skips video decoding completely. If a container has multiple audio tracks (e.g. English and Hindi), you can choose which track to analyze and preview. For full-length movies, it seeks to three dialogue-dense 90-second segments in the interior (~20%, ~50%, ~75% of duration), and samples up to two adaptive extra checkpoints if initial confidence or agreement is low.
+3. **Speech detection & correlation:** Runs a full-rate streaming voice-band detector (300–3400 Hz Butterworth bandpass + syllabic modulation, 20 ms frames, with Center-channel dialogue weighting on 5.1/7.1 tracks) and a two-stage Radix-2 FFT normalized cross-correlation (±60 s, auto-expanding to ±120 s) with parabolic peak refinement and multi-window joint pooled correlation fallback.
+4. **Consistency / drift check:** Compares offsets across the sampled checkpoints to warn if the subtitle has progressive drift or comes from a different release cut.
 5. **10-second audio preview:** Plays a short audio-only clip from the selected audio track synced with live subtitle text and `±0.1s` / `±0.5s` nudge buttons.
-6. **Save `.srt` with ad review:** Optionally saves a shifted (or drift-corrected) `.srt` file via Android SAF. Every flagged ad/credit line is listed with timestamp and reason so you can uncheck any false positive before saving.
+6. **Save `.srt` with ad review & verification:** Optionally saves a constant-offset shifted `.srt` file via Android SAF. Every flagged ad/credit line is listed with timestamp and reason so you can uncheck any false positive before saving, and Synctra automatically verifies the exported `.srt` against cached audio envelopes and provides offline **Diagnostics** export.
 
 ## Offset sign convention
 
@@ -33,7 +33,7 @@ Instead of guessing subtitle delay values by trial and error inside VLC, MX Play
 ## Supported formats
 
 - **Containers:** `.mp4`, `.mkv`, `.avi`, `.webm`, `.mov`, `.ts` (via AndroidX Media3 extractors)
-- **Audio codecs:** AAC, MP3, Opus, Vorbis, FLAC, PCM via native `MediaCodec`, with automatic fallback to `org.jellyfin.media3:media3-ffmpeg-decoder` for AC-3, E-AC-3, DTS, TrueHD, and ALAC
+- **Audio codecs:** AAC, MP3, Opus, Vorbis, FLAC, LPCM (8/16/24/32-bit LE/BE & 32-bit float) via native `MediaCodec`, with automatic fallback to `org.jellyfin.media3:media3-ffmpeg-decoder` for AC-3, E-AC-3, DTS, TrueHD, and ALAC
 - **Subtitles:** `.srt`, `.ass`, `.ssa`, `.vtt`
 - **Minimum Android version:** Android 7.0 (API 24), no storage permissions required (uses Android's document picker)
 - **Languages:** English and Indonesian (defaults to system locale, switchable in-app)

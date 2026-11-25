@@ -1,15 +1,11 @@
 package com.synctra.app.domain.subtitle
 
-import com.synctra.app.domain.model.DriftAssessment
 import com.synctra.app.domain.model.SubtitleCue
 import java.util.Locale
-import kotlin.math.roundToLong
 
 /**
  * Exports synchronized subtitles as clean UTF-8 `.srt`, supporting:
  * - Constant offset shift (`newTime = origTime + offsetMs`)
- * - Exact linear FPS stretch correction regressed on subtitle time:
- *   `newTime = origTime + anchorOffset + (origTime - anchorTime) * (speedRatio - 1) + manualNudgeMs`
  * - Selective exclusion of user-confirmed ad/credit/SDH cues
  */
 data class SrtExportResult(
@@ -28,25 +24,16 @@ object SrtExporter {
         allCues: List<SubtitleCue>,
         offsetMs: Long,
         excludedCueIndices: Set<Int> = emptySet(),
-        applyDriftCorrection: Boolean = false,
-        drift: DriftAssessment? = null,
-        manualNudgeMs: Long = 0L,
     ): String = exportSrtWithStats(
         allCues = allCues,
         offsetMs = offsetMs,
         excludedCueIndices = excludedCueIndices,
-        applyDriftCorrection = applyDriftCorrection,
-        drift = drift,
-        manualNudgeMs = manualNudgeMs,
     ).content
 
     fun exportSrtWithStats(
         allCues: List<SubtitleCue>,
         offsetMs: Long,
         excludedCueIndices: Set<Int> = emptySet(),
-        applyDriftCorrection: Boolean = false,
-        drift: DriftAssessment? = null,
-        manualNudgeMs: Long = 0L,
     ): SrtExportResult {
         val sb = StringBuilder(allCues.size * 64)
         var outIndex = 1
@@ -54,30 +41,14 @@ object SrtExporter {
         var excludedCount = 0
         var droppedByShiftCount = 0
 
-        val useDrift = applyDriftCorrection &&
-            drift != null &&
-            (drift.speedRatio != 1.0 || drift.driftMsPerHour != 0.0)
-
         for (cue in allCues) {
             if (cue.index in excludedCueIndices) {
                 excludedCount++
                 continue
             }
 
-            val newStart = shiftTimestamp(
-                origMs = cue.startMs,
-                constantOffsetMs = offsetMs,
-                useDrift = useDrift,
-                drift = drift,
-                manualNudgeMs = manualNudgeMs,
-            )
-            val rawEnd = shiftTimestamp(
-                origMs = cue.endMs,
-                constantOffsetMs = offsetMs,
-                useDrift = useDrift,
-                drift = drift,
-                manualNudgeMs = manualNudgeMs,
-            )
+            val newStart = cue.startMs + offsetMs
+            val rawEnd = cue.endMs + offsetMs
 
             // Drop cues shifted completely before 00:00:00,000, or clipped down to an unusable stub (<200 ms)
             if (rawEnd <= 0L || (newStart < 0L && rawEnd < MIN_CLAMPED_VISIBLE_DURATION_MS)) {
@@ -114,25 +85,6 @@ object SrtExporter {
             ?.takeIf { it.isNotBlank() }
             ?: "subtitle"
         return "$base.synced.srt"
-    }
-
-    private fun shiftTimestamp(
-        origMs: Long,
-        constantOffsetMs: Long,
-        useDrift: Boolean,
-        drift: DriftAssessment?,
-        manualNudgeMs: Long,
-    ): Long {
-        if (!useDrift || drift == null) {
-            return origMs + constantOffsetMs
-        }
-        // Works identically for both:
-        // - Exact cinema FPS match (anchorTimeMs = 0, anchorOffsetMs = baseOffset, slope = speedRatio - 1)
-        //   => origMs + baseOffset + origMs * (speedRatio - 1) = origMs * speedRatio + baseOffset
-        // - Weighted subtitle-time regression (anchorTimeMs = mean(t_sub), anchorOffsetMs = mean(offset))
-        val deltaFromAnchor = origMs - drift.anchorTimeMs
-        val driftAtTime = drift.anchorOffsetMs + (deltaFromAnchor * drift.slopeMsPerMs).roundToLong()
-        return origMs + driftAtTime + manualNudgeMs
     }
 
     internal fun formatSrtTimestamp(ms: Long): String {

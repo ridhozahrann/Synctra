@@ -25,11 +25,11 @@ import com.synctra.app.domain.subtitle.SrtExporter
 import com.synctra.app.domain.subtitle.SubtitleCleaner
 import com.synctra.app.domain.subtitle.SubtitleEncodingOption
 import com.synctra.app.domain.subtitle.SubtitleParser
-import com.synctra.app.domain.sync.FpsStretchMatcher
 import com.synctra.app.domain.sync.SyncAnalyzer
 import com.synctra.app.domain.sync.SyncDiagnosticsFormatter
 import com.synctra.app.domain.sync.WindowAudioInput
 import com.synctra.app.domain.sync.WindowPlanner
+import com.synctra.app.domain.sync.WindowSyncMatcher
 import com.synctra.app.ui.components.ExportSrtOptions
 import com.synctra.app.ui.i18n.AppLanguage
 import com.synctra.app.ui.i18n.AppStringsProvider
@@ -115,8 +115,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 cues = state.parsedSubtitle.allCues,
                 audioPosMs = preview.currentPositionMs,
                 appliedOffsetMs = state.effectiveOffsetMs,
-                result = state.result,
-                manualNudgeMs = state.manualNudgeMs,
             )
         } else {
             null
@@ -446,7 +444,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     var audioInputs = extractedWindows.map { WindowAudioInput(it.window, it.speechEnvelope) }
-                    var matchResult = FpsStretchMatcher.matchBest(
+                    var matchResult = WindowSyncMatcher.matchBest(
                         windows = audioInputs,
                         dialogueCues = cleaned.dialogueCues,
                         onExpandingSearch = {
@@ -509,7 +507,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 extractedWindows = combinedSorted
                                 audioInputs = combinedSorted.map { WindowAudioInput(it.window, it.speechEnvelope) }
-                                matchResult = FpsStretchMatcher.matchBest(
+                                matchResult = WindowSyncMatcher.matchBest(
                                     windows = audioInputs,
                                     dialogueCues = cleaned.dialogueCues,
                                 )
@@ -527,8 +525,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         audioTrackTitle = selectedTrack.displayTitle,
                         usedFfmpegDecoder = usedFfmpeg,
                         analysisDurationMs = elapsedMs,
-                        matchedFpsCandidate = matchResult.matchedFpsCandidate,
-                        matchedBaseOffsetMs = matchResult.baseOffsetMs,
                         usedJointPooling = matchResult.usedJointPooling,
                     )
                     Triple(aggregated, selectedTrack.audioIndex, audioInputs)
@@ -635,9 +631,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         allCues = parsed.allCues,
                         offsetMs = state.effectiveOffsetMs,
                         excludedCueIndices = options.excludedCueIndices,
-                        applyDriftCorrection = options.applyDriftCorrection,
-                        drift = targetResult.drift,
-                        manualNudgeMs = state.manualNudgeMs,
                     )
                     DocumentMetaReader.writeUtf8Text(appContext, destinationUri, exportResult.content)
                     val removed = exportResult.excludedCount + exportResult.droppedByShiftCount
@@ -712,7 +705,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         val cleaned = SubtitleCleaner.clean(reparsed, mediaDurationMs = mediaDurationMs)
         if (cleaned.dialogueCues.size < 3) return null
 
-        val match = FpsStretchMatcher.matchBest(
+        val match = WindowSyncMatcher.matchBest(
             windows = cachedWindows,
             dialogueCues = cleaned.dialogueCues,
         )
@@ -722,8 +715,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
             audioCodecUsed = "",
             usedFfmpegDecoder = false,
             analysisDurationMs = 1L,
-            matchedFpsCandidate = match.matchedFpsCandidate,
-            matchedBaseOffsetMs = match.baseOffsetMs,
             usedJointPooling = match.usedJointPooling,
         )
         return ExportVerificationResult(
@@ -771,8 +762,6 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 window = selectedWr,
                 offsetMs = state.effectiveOffsetMs,
                 cues = cues,
-                drift = result.drift,
-                manualNudgeMs = state.manualNudgeMs,
             )
         } else {
             result.recommendedPreviewAudioMs
@@ -811,14 +800,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         cues: List<SubtitleCue>,
         audioPosMs: Long,
         appliedOffsetMs: Long,
-        result: SyncResult,
-        manualNudgeMs: Long,
     ): String? {
-        val targetSubMs = if (result.drift.isLinearStretch && result.drift.severity != DriftSeverity.NONE) {
-            SyncAnalyzer.audioTimeToOriginalSubtitleTime(audioPosMs, result.drift, manualNudgeMs)
-        } else {
-            audioPosMs - appliedOffsetMs
-        }
+        val targetSubMs = audioPosMs - appliedOffsetMs
         val active = cues.filter { targetSubMs in it.startMs..it.endMs }
         if (active.isEmpty()) return null
         return active.joinToString("\n") { it.cleanText }

@@ -53,15 +53,12 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.FlaggedSubtitleCue
-import com.synctra.app.domain.model.SyncResult
 import com.synctra.app.ui.i18n.AppStrings
 import com.synctra.app.ui.theme.SynctraColors
 
 data class ExportSrtOptions(
     val excludedCueIndices: Set<Int>,
-    val applyDriftCorrection: Boolean,
 )
 
 /**
@@ -77,7 +74,6 @@ fun ExportSrtSheet(
     strings: AppStrings,
     totalCueCount: Int,
     effectiveOffsetMs: Long,
-    result: SyncResult,
     flaggedAds: List<FlaggedSubtitleCue>,
     flaggedSdh: List<FlaggedSubtitleCue>,
     onDismiss: () -> Unit,
@@ -90,9 +86,6 @@ fun ExportSrtSheet(
         mutableStateOf(flaggedAds.map { it.cue.index }.toSet())
     }
     var removeAllSdh by remember(flaggedSdh) { mutableStateOf(false) }
-    var applyDrift by remember(result.drift.severity, result.drift.isLinearStretch) {
-        mutableStateOf(result.drift.isLinearStretch && result.drift.severity != DriftSeverity.NONE)
-    }
 
     val totalRemovedCount = removedAdIndices.size + if (removeAllSdh) flaggedSdh.size else 0
     val keptCount = (totalCueCount - totalRemovedCount).coerceAtLeast(0)
@@ -180,37 +173,15 @@ fun ExportSrtSheet(
                             .weight(1f, fill = false),
                         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
                     ) {
-                        // Timing mode picker (only shown when drift was detected)
-                        if (result.drift.severity != DriftSeverity.NONE) {
-                            item(key = "timing_mode") {
-                                Text(
-                                    text = strings.exportModeLabel,
-                                    fontSize = 12.sp,
-                                    color = SynctraColors.InkMuted,
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    ModeChip(
-                                        label = strings.exportModeConstant(formatSignedSeconds(effectiveOffsetMs)),
-                                        selected = !applyDrift,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = { applyDrift = false },
-                                    )
-                                    val driftChipLabel = result.drift.detectedFpsLabel?.let { fps ->
-                                        "${strings.exportModeDrift} ($fps)"
-                                    } ?: strings.exportModeDrift
-                                    ModeChip(
-                                        label = driftChipLabel,
-                                        selected = applyDrift,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = { applyDrift = true },
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(16.dp))
-                            }
+                        // Applied constant offset summary
+                        item(key = "offset_info") {
+                            Text(
+                                text = strings.exportOffsetInfo(formatSignedSeconds(effectiveOffsetMs)),
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = SynctraColors.InkSecondary,
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
                         }
 
                         // Flagged ads & credits header
@@ -370,7 +341,6 @@ fun ExportSrtSheet(
                                 onConfirmSave(
                                     ExportSrtOptions(
                                         excludedCueIndices = excluded,
-                                        applyDriftCorrection = applyDrift,
                                     )
                                 )
                             },
@@ -394,32 +364,6 @@ fun ExportSrtSheet(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun ModeChip(
-    label: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier,
-        shape = RoundedCornerShape(10.dp),
-        color = if (selected) SynctraColors.AccentDim else SynctraColors.SurfaceSubtle,
-        border = BorderStroke(1.dp, if (selected) SynctraColors.Accent else SynctraColors.Hairline),
-    ) {
-        Text(
-            text = label,
-            fontSize = 12.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) SynctraColors.InkPrimary else SynctraColors.InkSecondary,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-        )
     }
 }
 

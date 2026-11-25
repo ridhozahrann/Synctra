@@ -43,14 +43,12 @@ object SyncDiagnosticsFormatter {
         sb.appendLine(
             String.format(
                 Locale.US,
-                "Cues: %d dialogue, %d filtered | Drift: %s (spread=%dms, slope=%.0fms/h, ratio=%.6f, linear=%b)",
+                "Cues: %d dialogue, %d filtered | Drift: %s (spread=%dms, slope=%.0fms/h)",
                 result.totalDialogueCues,
                 result.filteredJunkCues,
                 result.drift.severity.name,
                 result.drift.spreadMs,
                 result.drift.driftMsPerHour,
-                result.drift.speedRatio,
-                result.drift.isLinearStretch,
             )
         )
         sb.appendLine("Windows (${result.windowResults.size}):")

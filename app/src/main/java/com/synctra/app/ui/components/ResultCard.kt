@@ -193,22 +193,11 @@ fun ResultCard(
                     .fillMaxWidth()
                     .height(42.dp),
                 shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (result.drift.severity == DriftSeverity.SEVERE) {
-                        SynctraColors.Accent
-                    } else {
-                        SynctraColors.Hairline
-                    },
-                ),
+                border = BorderStroke(1.dp, SynctraColors.Hairline),
             ) {
                 Text(
                     text = strings.saveSrtAction,
-                    color = if (result.drift.severity == DriftSeverity.SEVERE) {
-                        SynctraColors.Accent
-                    } else {
-                        SynctraColors.InkPrimary
-                    },
+                    color = SynctraColors.InkPrimary,
                     fontWeight = FontWeight.Medium,
                     fontSize = 13.sp,
                 )

@@ -1,7 +1,5 @@
 package com.synctra.app
 
-import com.synctra.app.domain.model.DriftAssessment
-import com.synctra.app.domain.model.DriftSeverity
 import com.synctra.app.domain.model.FlagReason
 import com.synctra.app.domain.model.ParsedSubtitleFile
 import com.synctra.app.domain.model.SubtitleCue
@@ -44,34 +42,21 @@ class SrtExporterTest {
     }
 
     @Test
-    fun appliesLinearDriftCorrectionAcrossMovieTimeline() {
+    fun appliesConstantOffsetAndGeneratesSyncedFilename() {
         val cues = listOf(
             SubtitleCue(1, 600_000L, 603_000L, "Awal film", "Awal film"),
             SubtitleCue(2, 4_200_000L, 4_203_000L, "Satu jam kemudian", "Satu jam kemudian"),
         )
-        // Drift of +3600 ms/hour anchored at t=2_400_000ms with offset +1000ms:
-        // At t=600_000ms (-0.5h): offset = 1000 - 1800 = -800ms -> start = 599_200ms
-        // At t=4_200_000ms (+0.5h): offset = 1000 + 1800 = +2800ms -> start = 4_202_800ms
-        val drift = DriftAssessment(
-            severity = DriftSeverity.MILD,
-            driftMsPerHour = 3_600.0,
-            spreadMs = 3_600L,
-            suspectedCause = null,
-            anchorTimeMs = 2_400_000L,
-            anchorOffsetMs = 1_000L,
-        )
 
         val exported = SrtExporter.exportSrt(
             allCues = cues,
-            offsetMs = 1_000L,
-            applyDriftCorrection = true,
-            drift = drift,
+            offsetMs = 1_250L,
         )
 
-        val reparsed = SubtitleParser.parse(exported.toByteArray(Charsets.UTF_8), "drift.srt")
+        val reparsed = SubtitleParser.parse(exported.toByteArray(Charsets.UTF_8), "constant.srt")
         assertEquals(2, reparsed.allCues.size)
-        assertEquals(599_200L, reparsed.allCues[0].startMs)
-        assertEquals(4_202_800L, reparsed.allCues[1].startMs)
+        assertEquals(601_250L, reparsed.allCues[0].startMs)
+        assertEquals(4_201_250L, reparsed.allCues[1].startMs)
         assertTrue(SrtExporter.suggestedOutputFileName("Inception.2010.ass") == "Inception.2010.synced.srt")
     }
 

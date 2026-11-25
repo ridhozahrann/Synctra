@@ -421,7 +421,6 @@ fun SynctraScreen(
                 strings = strings,
                 totalCueCount = state.parsedSubtitle!!.allCues.size,
                 effectiveOffsetMs = state.effectiveOffsetMs,
-                result = state.result!!,
                 flaggedAds = cleaned?.flaggedAdOrCreditCues.orEmpty(),
                 flaggedSdh = cleaned?.flaggedSdhCues.orEmpty(),
                 onDismiss = { showExportSheet = false },
