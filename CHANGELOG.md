@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.2
+- Prevented potential OOM crashes in `DocumentMetaReader` by streaming subtitle reads with an early byte-limit check.
+- Fixed multi-byte CJK charset auto-detection on >64 KB subtitle files by newline-aligning the 64 KB detection prefix, narrowed HTML/VTT tag stripping to preserve `<`/`>` in dialogue, added HTML entity decoding, and made ASS `\p` drawing tag detection case-insensitive.
+- Fixed Media3 `Extractor` resource leaks on probe/decoder failure, added full LPCM decoding (8/16/24/32-bit LE/BE and 32-bit float) for `AUDIO_RAW` tracks, and forwarded `KEY_MAX_INPUT_SIZE` to `MediaCodec`.
+- Fixed async selection/analysis race conditions in `SyncViewModel`, backward-seek premature stop in `AudioPreviewPlayer`, duplicate window index handling in `FftCrossCorrelator`, and drift/nudge consistency in `SyncAnalyzer`.
+- Improved UI accuracy: prevented "In sync" label when drift is present, added a dedicated drift-remaining verification badge, wrapped >3 Audio Check checkpoint chips in `FlowRow`, fixed buffering/idle subtitle styling, and preserved `ExportSrtSheet` across rotation.
+
 ## v1.4.1
 - Fixed the bottom "Choose location & save" button in the Save `.srt` review sheet being hidden behind the system navigation bar by rendering `ExportSrtSheet` as an in-window overlay with `BackHandler` and direct Activity `statusBarsPadding` / `navigationBarsPadding`.
 - Configured `enableEdgeToEdge` with dark transparent system bar styles so status and navigation bars match the dark UI even when the device is in Light Mode.
