@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.3
+- Removed automatic FPS drift/stretch rescaling so `.srt` export strictly applies the verified constant offset while keeping interactive ad/credit/SDH removal review and informational drift warnings intact.
+- Updated `README.md`, bug report template (with Diagnostics paste field), GitHub Actions workflows (`checkout@v6` and `setup-gradle@v6`), and `.gitattributes`.
+
 ## v1.4.2
 - Prevented potential OOM crashes in `DocumentMetaReader` by streaming subtitle reads with an early byte-limit check.
 - Fixed multi-byte CJK charset auto-detection on >64 KB subtitle files by newline-aligning the 64 KB detection prefix, narrowed HTML/VTT tag stripping to preserve `<`/`>` in dialogue, added HTML entity decoding, and made ASS `\p` drawing tag detection case-insensitive.
