@@ -147,4 +147,38 @@ class FftCrossCorrelatorTest {
             abs(joint[0].offsetMs - wideOffsetMs) <= 80L,
         )
     }
+
+    @Test
+    fun correlateJointlyHandlesDuplicateWindowIndices() {
+        val w0 = SampleWindow(0, "Awal", 1_200_000L, 60_000L)
+        val w1 = SampleWindow(0, "Akhir", 3_600_000L, 60_000L)
+        val frameMs = SpeechActivityDetector.FRAME_DURATION_MS
+        val count = (w0.durationMs / frameMs).toInt()
+        val expectedOffsetMs = 3_200L
+
+        val patterns = listOf(
+            listOf(4_000L to 7_500L, 16_000L to 19_500L, 32_000L to 36_000L, 48_000L to 52_000L),
+            listOf(6_000L to 9_500L, 21_000L to 25_000L, 37_000L to 41_500L, 50_000L to 54_000L),
+        )
+        val cues = mutableListOf<SubtitleCue>()
+        var idx = 1
+        val inputs = listOf(w0, w1).mapIndexed { wIdx, w ->
+            val env = FloatArray(count)
+            for ((s, e) in patterns[wIdx]) {
+                cues.add(SubtitleCue(idx++, w.startMs + s - expectedOffsetMs, w.startMs + e - expectedOffsetMs, "L$idx", "L$idx"))
+                val i0 = (s / frameMs).toInt().coerceIn(0, count - 1)
+                val i1 = (e / frameMs).toInt().coerceIn(i0, count - 1)
+                for (i in i0..i1) env[i] = 1.0f
+            }
+            WindowAudioInput(w, env)
+        }
+
+        val joint = FftCrossCorrelator.correlateJointly(inputs, cues, maxLagMs = 60_000L)
+        assertNotNull(joint)
+        assertEquals(2, joint!!.size)
+        assertEquals("Awal", joint[0].window.label)
+        assertEquals("Akhir", joint[1].window.label)
+        assertTrue(abs(joint[0].offsetMs - expectedOffsetMs) <= 80L)
+        assertTrue(abs(joint[1].offsetMs - expectedOffsetMs) <= 80L)
+    }
 }

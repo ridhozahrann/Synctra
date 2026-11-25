@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,7 +75,7 @@ fun SynctraScreen(
     val view = LocalView.current
     val scope = rememberCoroutineScope()
 
-    var showExportSheet by remember { mutableStateOf(false) }
+    var showExportSheet by rememberSaveable { mutableStateOf(false) }
 
     // Keep screen awake during active audio extraction/correlation so long files on slow storage don't sleep
     DisposableEffect(view, state.isAnalyzing) {

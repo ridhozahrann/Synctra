@@ -32,7 +32,7 @@ object SubtitleParser {
     private val vttShortTimestampRegex = Regex(
         """(\d{2}):(\d{2})\.(\d{1,3})\s*-->\s*(\d{2}):(\d{2})\.(\d{1,3})"""
     )
-    private val htmlTagRegex = Regex("""<[^>]+>""")
+    private val htmlTagRegex = Regex("""</?[a-zA-Z][^>]*>|<\d{1,2}:\d{2}[^>]*>""")
     private val assOverrideRegex = Regex("""\{[^}]*\}""")
     private val whitespaceRegex = Regex("""[ \t]+""")
 
@@ -122,8 +122,8 @@ object SubtitleParser {
     }
 
     private fun detectLegacyCharset(bytes: ByteArray): Pair<String, String> {
-        // Score on a bounded prefix (up to 64 KB) for speed on huge subtitle files
-        val sampleLen = minOf(bytes.size, 65_536)
+        // Score on a bounded, newline-aligned prefix (up to 64 KB) so multi-byte CJK chars are never sliced
+        val sampleLen = boundedLineAlignedLength(bytes, 65_536)
         var bestCharset: Charset? = null
         var bestScore = Double.NEGATIVE_INFINITY
 
@@ -167,6 +167,16 @@ object SubtitleParser {
             .decode(ByteBuffer.wrap(bytes))
             .toString()
         return fullText to chosen.name()
+    }
+
+    internal fun boundedLineAlignedLength(bytes: ByteArray, limit: Int): Int {
+        if (bytes.size <= limit) return bytes.size
+        for (idx in (limit - 1) downTo 0) {
+            if (bytes[idx] == '\n'.code.toByte()) {
+                return if (idx > 0) idx + 1 else limit
+            }
+        }
+        return limit
     }
 
     private fun scoreDecodedText(
@@ -475,7 +485,7 @@ object SubtitleParser {
         return cues
     }
 
-    private val assDrawingLevelRegex = Regex("""\\p(\d+)""")
+    private val assDrawingLevelRegex = Regex("""(?i)\\p(\d+)""")
 
     private fun parseAss(content: String): List<SubtitleCue> {
         val cues = mutableListOf<SubtitleCue>()
@@ -531,7 +541,7 @@ object SubtitleParser {
      * end-of-line so typesetting coordinates (`m 0 0 l 100 0 ...`) never count as spoken dialogue.
      */
     internal fun stripAssDrawingCommands(rawText: String): String {
-        if (!rawText.contains("\\p")) return rawText
+        if (!rawText.contains("\\p", ignoreCase = true)) return rawText
 
         val out = StringBuilder(rawText.length)
         var cursor = 0
@@ -580,6 +590,13 @@ object SubtitleParser {
         return text
             .replace(assOverrideRegex, "")
             .replace(htmlTagRegex, "")
+            .replace("&nbsp;", " ", ignoreCase = true)
+            .replace("&lt;", "<", ignoreCase = true)
+            .replace("&gt;", ">", ignoreCase = true)
+            .replace("&quot;", "\"", ignoreCase = true)
+            .replace("&#39;", "'")
+            .replace("&apos;", "'", ignoreCase = true)
+            .replace("&amp;", "&", ignoreCase = true)
             .lines()
             .map { it.replace(whitespaceRegex, " ").trim() }
             .filter { it.isNotEmpty() }

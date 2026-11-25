@@ -113,50 +113,53 @@ class AudioSampleExtractor(private val context: Context) {
         try {
             val totalLength = dataSource.open(DataSpec(uri))
             val session = openExtractorAndProbe(dataSource, uri, totalLength)
-            if (session.audioEntries.isEmpty()) {
-                throw IOException("Jalur audio tidak ditemukan di dalam file video.")
-            }
-
-            val safeIdx = selectedAudioIndex.coerceIn(0, session.audioEntries.lastIndex)
-            val targetEntry = session.audioEntries[safeIdx]
-            val audioFormat = targetEntry.format
-                ?: throw IOException("Format jalur audio yang dipilih tidak terbaca.")
-
-            val decoder = createBestAudioDecoder(audioFormat)
             try {
-                val results = ArrayList<ExtractedWindowAudio>(windows.size)
-
-                for ((idx, window) in windows.withIndex()) {
-                    if (isCancelled()) throw kotlinx.coroutines.CancellationException("Analysis cancelled")
-                    onWindowProgress(idx, windows.size, window)
-                    val (actualStartMs, envelope) = extractSingleWindow(
-                        dataSource = dataSource,
-                        uri = uri,
-                        totalLength = totalLength,
-                        session = session,
-                        targetTrackOutput = targetEntry.trackOutput,
-                        decoder = decoder,
-                        window = window,
-                        isCancelled = isCancelled,
-                    )
-                    val actualDurationMs = if (envelope.isNotEmpty()) {
-                        envelope.size.toLong() * SpeechActivityDetector.FRAME_DURATION_MS
-                    } else {
-                        window.durationMs
-                    }
-                    results.add(
-                        ExtractedWindowAudio(
-                            window = window.copy(startMs = actualStartMs, durationMs = actualDurationMs),
-                            speechEnvelope = envelope,
-                            usedFfmpegDecoder = decoder.isFfmpeg,
-                        )
-                    )
+                if (session.audioEntries.isEmpty()) {
+                    throw IOException("Jalur audio tidak ditemukan di dalam file video.")
                 }
 
-                return results
+                val safeIdx = selectedAudioIndex.coerceIn(0, session.audioEntries.lastIndex)
+                val targetEntry = session.audioEntries[safeIdx]
+                val audioFormat = targetEntry.format
+                    ?: throw IOException("Format jalur audio yang dipilih tidak terbaca.")
+
+                val decoder = createBestAudioDecoder(audioFormat)
+                try {
+                    val results = ArrayList<ExtractedWindowAudio>(windows.size)
+
+                    for ((idx, window) in windows.withIndex()) {
+                        if (isCancelled()) throw kotlinx.coroutines.CancellationException("Analysis cancelled")
+                        onWindowProgress(idx, windows.size, window)
+                        val (actualStartMs, envelope) = extractSingleWindow(
+                            dataSource = dataSource,
+                            uri = uri,
+                            totalLength = totalLength,
+                            session = session,
+                            targetTrackOutput = targetEntry.trackOutput,
+                            decoder = decoder,
+                            window = window,
+                            isCancelled = isCancelled,
+                        )
+                        val actualDurationMs = if (envelope.isNotEmpty()) {
+                            envelope.size.toLong() * SpeechActivityDetector.FRAME_DURATION_MS
+                        } else {
+                            window.durationMs
+                        }
+                        results.add(
+                            ExtractedWindowAudio(
+                                window = window.copy(startMs = actualStartMs, durationMs = actualDurationMs),
+                                speechEnvelope = envelope,
+                                usedFfmpegDecoder = decoder.isFfmpeg,
+                            )
+                        )
+                    }
+
+                    return results
+                } finally {
+                    decoder.close()
+                }
             } finally {
-                decoder.close()
-                session.extractor.release()
+                runCatching { session.extractor.release() }
             }
         } finally {
             runCatching { dataSource.close() }
@@ -281,7 +284,7 @@ class AudioSampleExtractor(private val context: Context) {
         val extractors = DefaultExtractorsFactory().createExtractors(uri, emptyMap())
         var matched: Extractor? = null
 
-        for (candidate in extractors) {
+        for ((idx, candidate) in extractors.withIndex()) {
             val input = DefaultExtractorInput(dataSource, 0L, totalLength)
             val ok = try {
                 candidate.sniff(input)
@@ -290,6 +293,9 @@ class AudioSampleExtractor(private val context: Context) {
             }
             if (ok) {
                 matched = candidate
+                for (remIdx in (idx + 1) until extractors.size) {
+                    runCatching { extractors[remIdx].release() }
+                }
                 break
             } else {
                 candidate.release()
@@ -301,75 +307,80 @@ class AudioSampleExtractor(private val context: Context) {
         val extractor = matched
             ?: throw IOException("Format container video tidak dikenali. Gunakan file MP4, MKV, WebM, atau AVI.")
 
-        dataSource.close()
-        reopenAt(dataSource, uri, 0L)
+        try {
+            dataSource.close()
+            reopenAt(dataSource, uri, 0L)
 
-        var discoveredSeekMap: SeekMap? = null
-        var tracksEnded = false
-        val audioEntries = mutableListOf<AudioTrackEntry>()
-        val discardTrackOutput = DiscardTrackOutput()
+            var discoveredSeekMap: SeekMap? = null
+            var tracksEnded = false
+            val audioEntries = mutableListOf<AudioTrackEntry>()
+            val discardTrackOutput = DiscardTrackOutput()
 
-        extractor.init(object : ExtractorOutput {
-            override fun track(id: Int, type: Int): TrackOutput {
-                if (type == C.TRACK_TYPE_AUDIO) {
-                    lateinit var entry: AudioTrackEntry
-                    val output = AudioCaptureTrackOutput { fmt ->
-                        if (entry.format == null) {
-                            entry.format = fmt
+            extractor.init(object : ExtractorOutput {
+                override fun track(id: Int, type: Int): TrackOutput {
+                    if (type == C.TRACK_TYPE_AUDIO) {
+                        lateinit var entry: AudioTrackEntry
+                        val output = AudioCaptureTrackOutput { fmt ->
+                            if (entry.format == null) {
+                                entry.format = fmt
+                            }
                         }
+                        entry = AudioTrackEntry(id, output)
+                        audioEntries.add(entry)
+                        return output
                     }
-                    entry = AudioTrackEntry(id, output)
-                    audioEntries.add(entry)
-                    return output
+                    return discardTrackOutput
                 }
-                return discardTrackOutput
-            }
 
-            override fun endTracks() {
-                tracksEnded = true
-            }
-
-            override fun seekMap(seekMap: SeekMap) {
-                discoveredSeekMap = seekMap
-            }
-        })
-
-        var extractorInput = DefaultExtractorInput(dataSource, 0L, totalLength)
-        val positionHolder = PositionHolder()
-        var steps = 0
-
-        fun allAudioFormatsReady(): Boolean =
-            tracksEnded && audioEntries.isNotEmpty() && audioEntries.all { it.format != null }
-
-        while ((discoveredSeekMap == null || !allAudioFormatsReady()) && steps < 6000) {
-            steps++
-            val res = try {
-                extractor.read(extractorInput, positionHolder)
-            } catch (_: EOFException) {
-                Extractor.RESULT_END_OF_INPUT
-            }
-            when (res) {
-                Extractor.RESULT_CONTINUE -> Unit
-                Extractor.RESULT_SEEK -> {
-                    val pos = positionHolder.position.coerceAtLeast(0L)
-                    dataSource.close()
-                    reopenAt(dataSource, uri, pos)
-                    extractorInput = DefaultExtractorInput(dataSource, pos, totalLength)
+                override fun endTracks() {
+                    tracksEnded = true
                 }
-                Extractor.RESULT_END_OF_INPUT -> break
+
+                override fun seekMap(seekMap: SeekMap) {
+                    discoveredSeekMap = seekMap
+                }
+            })
+
+            var extractorInput = DefaultExtractorInput(dataSource, 0L, totalLength)
+            val positionHolder = PositionHolder()
+            var steps = 0
+
+            fun allAudioFormatsReady(): Boolean =
+                tracksEnded && audioEntries.isNotEmpty() && audioEntries.all { it.format != null }
+
+            while ((discoveredSeekMap == null || !allAudioFormatsReady()) && steps < 6000) {
+                steps++
+                val res = try {
+                    extractor.read(extractorInput, positionHolder)
+                } catch (_: EOFException) {
+                    Extractor.RESULT_END_OF_INPUT
+                }
+                when (res) {
+                    Extractor.RESULT_CONTINUE -> Unit
+                    Extractor.RESULT_SEEK -> {
+                        val pos = positionHolder.position.coerceAtLeast(0L)
+                        dataSource.close()
+                        reopenAt(dataSource, uri, pos)
+                        extractorInput = DefaultExtractorInput(dataSource, pos, totalLength)
+                    }
+                    Extractor.RESULT_END_OF_INPUT -> break
+                }
             }
+
+            val seekMap = discoveredSeekMap
+                ?: throw IOException("Tidak dapat membaca timeline/seek map dari file video ini.")
+
+            val validAudioEntries = audioEntries.filter { it.format != null }
+
+            return ProbeSession(
+                extractor = extractor,
+                seekMap = seekMap,
+                audioEntries = validAudioEntries,
+            )
+        } catch (t: Throwable) {
+            runCatching { extractor.release() }
+            throw t
         }
-
-        val seekMap = discoveredSeekMap
-            ?: throw IOException("Tidak dapat membaca timeline/seek map dari file video ini.")
-
-        val validAudioEntries = audioEntries.filter { it.format != null }
-
-        return ProbeSession(
-            extractor = extractor,
-            seekMap = seekMap,
-            audioEntries = validAudioEntries,
-        )
     }
 
     private fun createBestAudioDecoder(format: Format): AudioPacketDecoder {
@@ -379,6 +390,7 @@ class AudioSampleExtractor(private val context: Context) {
             return RawPcmDecoder(
                 channels = format.channelCount.coerceAtLeast(1),
                 sampleRate = format.sampleRate.coerceAtLeast(8000),
+                pcmEncoding = format.pcmEncoding,
             )
         }
 
@@ -453,6 +465,7 @@ class AudioSampleExtractor(private val context: Context) {
     private class RawPcmDecoder(
         private val channels: Int,
         private val sampleRate: Int,
+        private val pcmEncoding: Int,
     ) : AudioPacketDecoder {
         override val isFfmpeg: Boolean = false
         private var pcmScratch = ShortArray(8192)
@@ -463,11 +476,10 @@ class AudioSampleExtractor(private val context: Context) {
             ptsUs: Long,
             onPcm16: (ShortArray, Int, Int, Int, Long) -> Unit,
         ) {
-            val count = size / 2
+            val (buf, count) = decodeRawPcmTo16Bit(data, size, pcmEncoding, pcmScratch)
+            pcmScratch = buf
             if (count <= 0) return
-            if (pcmScratch.size < count) pcmScratch = ShortArray(count)
-            ByteBuffer.wrap(data, 0, size).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmScratch, 0, count)
-            onPcm16(pcmScratch, count, channels, sampleRate, ptsUs)
+            onPcm16(buf, count, channels, sampleRate, ptsUs)
         }
 
         override fun close() = Unit
@@ -489,6 +501,9 @@ class AudioSampleExtractor(private val context: Context) {
                 outSampleRate,
                 outChannels,
             )
+            if (format.maxInputSize > 0) {
+                mediaFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, format.maxInputSize)
+            }
             format.initializationData.forEachIndexed { index, csd ->
                 mediaFormat.setByteBuffer("csd-$index", ByteBuffer.wrap(csd))
             }
@@ -677,5 +692,108 @@ class AudioSampleExtractor(private val context: Context) {
             offset: Int,
             cryptoData: TrackOutput.CryptoData?,
         ) = Unit
+    }
+
+    companion object {
+        internal fun decodeRawPcmTo16Bit(
+            data: ByteArray,
+            size: Int,
+            pcmEncoding: Int,
+            out: ShortArray,
+        ): Pair<ShortArray, Int> {
+            val safeSize = size.coerceIn(0, data.size)
+            if (safeSize <= 0) return out to 0
+
+            return when (pcmEncoding) {
+                C.ENCODING_PCM_8BIT -> {
+                    val buf = if (out.size < safeSize) ShortArray(safeSize) else out
+                    for (i in 0 until safeSize) {
+                        buf[i] = (((data[i].toInt() and 0xFF) - 128) shl 8).toShort()
+                    }
+                    buf to safeSize
+                }
+                C.ENCODING_PCM_16BIT_BIG_ENDIAN -> {
+                    val count = safeSize / 2
+                    if (count <= 0) return out to 0
+                    val buf = if (out.size < count) ShortArray(count) else out
+                    ByteBuffer.wrap(data, 0, count * 2)
+                        .order(ByteOrder.BIG_ENDIAN)
+                        .asShortBuffer()
+                        .get(buf, 0, count)
+                    buf to count
+                }
+                C.ENCODING_PCM_24BIT -> {
+                    val count = safeSize / 3
+                    if (count <= 0) return out to 0
+                    val buf = if (out.size < count) ShortArray(count) else out
+                    for (i in 0 until count) {
+                        val b = i * 3
+                        val hi = data[b + 2].toInt() shl 8
+                        val lo = data[b + 1].toInt() and 0xFF
+                        buf[i] = (hi or lo).toShort()
+                    }
+                    buf to count
+                }
+                C.ENCODING_PCM_24BIT_BIG_ENDIAN -> {
+                    val count = safeSize / 3
+                    if (count <= 0) return out to 0
+                    val buf = if (out.size < count) ShortArray(count) else out
+                    for (i in 0 until count) {
+                        val b = i * 3
+                        val hi = data[b].toInt() shl 8
+                        val lo = data[b + 1].toInt() and 0xFF
+                        buf[i] = (hi or lo).toShort()
+                    }
+                    buf to count
+                }
+                C.ENCODING_PCM_32BIT -> {
+                    val count = safeSize / 4
+                    if (count <= 0) return out to 0
+                    val buf = if (out.size < count) ShortArray(count) else out
+                    for (i in 0 until count) {
+                        val b = i * 4
+                        val hi = data[b + 3].toInt() shl 8
+                        val lo = data[b + 2].toInt() and 0xFF
+                        buf[i] = (hi or lo).toShort()
+                    }
+                    buf to count
+                }
+                C.ENCODING_PCM_32BIT_BIG_ENDIAN -> {
+                    val count = safeSize / 4
+                    if (count <= 0) return out to 0
+                    val buf = if (out.size < count) ShortArray(count) else out
+                    for (i in 0 until count) {
+                        val b = i * 4
+                        val hi = data[b].toInt() shl 8
+                        val lo = data[b + 1].toInt() and 0xFF
+                        buf[i] = (hi or lo).toShort()
+                    }
+                    buf to count
+                }
+                C.ENCODING_PCM_FLOAT -> {
+                    val count = safeSize / 4
+                    if (count <= 0) return out to 0
+                    val buf = if (out.size < count) ShortArray(count) else out
+                    val fb = ByteBuffer.wrap(data, 0, count * 4)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .asFloatBuffer()
+                    for (i in 0 until count) {
+                        val clamped = fb.get(i).coerceIn(-1.0f, 1.0f)
+                        buf[i] = (clamped * 32767.0f).toInt().toShort()
+                    }
+                    buf to count
+                }
+                else -> {
+                    val count = safeSize / 2
+                    if (count <= 0) return out to 0
+                    val buf = if (out.size < count) ShortArray(count) else out
+                    ByteBuffer.wrap(data, 0, count * 2)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .asShortBuffer()
+                        .get(buf, 0, count)
+                    buf to count
+                }
+            }
+        }
     }
 }

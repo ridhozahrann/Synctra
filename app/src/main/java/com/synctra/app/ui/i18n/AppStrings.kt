@@ -85,6 +85,7 @@ data class AppStrings(
     val diagnosticsCopiedLabel: String,
     val verifySyncedBadge: (String) -> String,
     val verifyOffsetBadge: (String) -> String,
+    val verifyDriftBadge: String,
     val verifyRecheckAction: String,
 ) {
     fun confidenceLabel(level: ConfidenceLevel): String = when (language) {
@@ -239,6 +240,7 @@ object AppStringsProvider {
         diagnosticsCopiedLabel = "Diagnostik",
         verifySyncedBadge = { ms -> "✓ File .srt terverifikasi (sisa $ms ms)" },
         verifyOffsetBadge = { sec -> "⚠ File .srt masih meleset ${sec}s" },
+        verifyDriftBadge = "⚠ Drift masih terdeteksi di file .srt",
         verifyRecheckAction = "Cek ulang",
     )
 
@@ -314,6 +316,7 @@ object AppStringsProvider {
         diagnosticsCopiedLabel = "Diagnostics",
         verifySyncedBadge = { ms -> "✓ Exported .srt verified ($ms ms residual)" },
         verifyOffsetBadge = { sec -> "⚠ Exported .srt still off by ${sec}s" },
+        verifyDriftBadge = "⚠ Drift still detected in exported .srt",
         verifyRecheckAction = "Re-verify",
     )
 }

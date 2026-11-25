@@ -53,7 +53,7 @@ fun ResultCard(
     onCopyDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val isSynced = abs(effectiveOffsetMs) <= 150L
+    val isSynced = abs(effectiveOffsetMs) <= 150L && result.drift.severity == DriftSeverity.NONE
     val formattedSec = formatSignedSeconds(effectiveOffsetMs)
     val formattedMs = formatSignedMillis(effectiveOffsetMs)
 
@@ -220,10 +220,10 @@ fun ResultCard(
                 val verifiedOk = exportVerification.isVerifiedSynced
                 val badgeColor = if (verifiedOk) SynctraColors.Synced else SynctraColors.Accent
                 val badgeBg = if (verifiedOk) SynctraColors.SurfaceSubtle else SynctraColors.AccentDim
-                val badgeText = if (verifiedOk) {
-                    strings.verifySyncedBadge(formatSignedMillis(exportVerification.residualOffsetMs))
-                } else {
-                    strings.verifyOffsetBadge(formatSignedSeconds(exportVerification.residualOffsetMs))
+                val badgeText = when {
+                    verifiedOk -> strings.verifySyncedBadge(formatSignedMillis(exportVerification.residualOffsetMs))
+                    exportVerification.hasDrift && abs(exportVerification.residualOffsetMs) <= 200L -> strings.verifyDriftBadge
+                    else -> strings.verifyOffsetBadge(formatSignedSeconds(exportVerification.residualOffsetMs))
                 }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),

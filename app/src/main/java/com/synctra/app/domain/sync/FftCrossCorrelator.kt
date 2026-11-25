@@ -323,6 +323,7 @@ object FftCrossCorrelator {
         val coarseLen = 2 * coarseMaxLag + 1
 
         data class JointWindowState(
+            val listIdx: Int,
             val audio: PreparedAudioWindow,
             val weight: Double,
             val subEnvelope: FloatArray,
@@ -331,7 +332,7 @@ object FftCrossCorrelator {
         )
 
         val prepared = ArrayList<JointWindowState>(preparedWindows.size)
-        for (audio in preparedWindows) {
+        for ((listIdx, audio) in preparedWindows.withIndex()) {
             val env = audio.audioEnvelope
             if (env.size < 25 || audio.normA <= 1e-9) continue
             val subOriginMs = audio.window.startMs - maxLagFrames.toLong() * FRAME_MS
@@ -346,7 +347,7 @@ object FftCrossCorrelator {
             val coarseCorr = computeNormalizedFftCorrelation(audio, coarseSub, coarseMaxLag)
             val subPrefix = buildSubPrefix(subEnv)
             val weight = audio.speechRatio.coerceIn(0.08f, 0.65f).toDouble()
-            prepared.add(JointWindowState(audio, weight, subEnv, subPrefix, coarseCorr))
+            prepared.add(JointWindowState(listIdx, audio, weight, subEnv, subPrefix, coarseCorr))
         }
 
         if (prepared.size < 2) return null
@@ -480,7 +481,7 @@ object FftCrossCorrelator {
             val promTerm = ((effectiveProm - 1.8) / 4.2).coerceIn(0.0, 1.0)
             val conf = (0.45 * corrTerm + 0.55 * promTerm).toFloat().coerceIn(0f, 0.75f)
 
-            resultsByIndex[pw.audio.window.index] = WindowSyncResult(
+            resultsByIndex[pw.listIdx] = WindowSyncResult(
                 window = pw.audio.window,
                 offsetMs = refinedMs,
                 confidence = conf,
@@ -491,8 +492,8 @@ object FftCrossCorrelator {
 
         if (supportingWindows < 2) return null
 
-        return preparedWindows.map { audio ->
-            resultsByIndex[audio.window.index] ?: WindowSyncResult(
+        return preparedWindows.mapIndexed { idx, audio ->
+            resultsByIndex[idx] ?: WindowSyncResult(
                 window = audio.window,
                 offsetMs = bestJointLag.toLong() * FRAME_MS,
                 confidence = 0f,

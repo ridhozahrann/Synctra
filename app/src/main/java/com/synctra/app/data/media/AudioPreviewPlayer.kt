@@ -184,16 +184,22 @@ class AudioPreviewPlayer(
         tickerJob?.cancel()
         tickerJob = scope.launch {
             val endMs = clipStartMs + clipDurationMs
+            var sawInRange = false
+            val startedAtMs = android.os.SystemClock.elapsedRealtime()
             while (isActive) {
                 val exo = player ?: break
                 val pos = exo.currentPosition
-                if (pos >= endMs && exo.playbackState == Player.STATE_READY) {
+                if (pos < endMs) {
+                    sawInRange = true
+                }
+                val seekSettled = sawInRange || (android.os.SystemClock.elapsedRealtime() - startedAtMs >= 300L)
+                if (pos >= endMs && exo.isPlaying && seekSettled) {
                     stop()
                     _state.value = _state.value.copy(currentPositionMs = clipStartMs)
                     break
                 }
                 _state.value = _state.value.copy(
-                    currentPositionMs = pos.coerceAtLeast(clipStartMs),
+                    currentPositionMs = pos.coerceIn(clipStartMs, endMs),
                     isPlaying = exo.playWhenReady && exo.playbackState != Player.STATE_ENDED,
                     isBuffering = exo.playbackState == Player.STATE_BUFFERING,
                 )

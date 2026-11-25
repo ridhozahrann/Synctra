@@ -165,4 +165,94 @@ class SubtitleParserTest {
         assertEquals(1, parsed.allCues.size)
         assertEquals("東京タワーへ行く。", parsed.allCues[0].cleanText)
     }
+
+    @Test
+    fun autoDetectsLargeMultiByteCjkFileWhen64KbBoundarySplitsCharacter() {
+        for (charsetName in listOf("Shift_JIS", "GBK")) {
+            val charset = java.nio.charset.Charset.forName(charsetName)
+            val phrases = if (charsetName == "Shift_JIS") {
+                listOf(
+                    "おはようございます。今日はいい天気ですね。",
+                    "映画を見に行きましょう！",
+                )
+            } else {
+                listOf(
+                    "你好，今天天气非常好，我们出发吧。",
+                    "这部电影的声音和字幕完全同步了。",
+                )
+            }
+            val sb = StringBuilder()
+            var cueIdx = 1
+            var lastPhrase = phrases[0]
+            while (sb.toString().toByteArray(charset).size < 72_000) {
+                val startSec = cueIdx * 3
+                val h = startSec / 3600
+                val m = (startSec % 3600) / 60
+                val s = startSec % 60
+                val eSec = startSec + 2
+                val eh = eSec / 3600
+                val em = (eSec % 3600) / 60
+                val es = eSec % 60
+                lastPhrase = phrases[(cueIdx - 1) % phrases.size]
+                sb.append(cueIdx++).append("\r\n")
+                    .append(String.format("%02d:%02d:%02d,000 --> %02d:%02d:%02d,000\r\n", h, m, s, eh, em, es))
+                    .append(lastPhrase).append("\r\n\r\n")
+            }
+
+            // Ensure byte 65535 sits mid-character by shifting prefix padding with spaces if needed
+            var bytes = sb.toString().toByteArray(charset)
+            var pad = 0
+            while (pad < 8 && bytes.size > 65_536) {
+                val padded = (" ".repeat(pad) + sb.toString()).toByteArray(charset)
+                val probe = String(padded, 0, 65_536, charset)
+                if (probe.endsWith('\uFFFD')) {
+                    bytes = padded
+                    break
+                }
+                pad++
+            }
+
+            val parsed = SubtitleParser.parse(bytes, "large_$charsetName.srt")
+            assertTrue("Expected > 500 cues for $charsetName", parsed.allCues.size > 500)
+            assertEquals(
+                "Large file charset detection failed for $charsetName (detected ${parsed.encodingName})",
+                lastPhrase,
+                parsed.allCues.last().cleanText,
+            )
+        }
+    }
+
+    @Test
+    fun preservesAngleBracketsInDialogueAndDecodesHtmlEntities() {
+        val vtt = """
+            WEBVTT
+
+            00:01.000 --> 00:04.000
+            <i>x &lt; 5 and y &gt; 2 &amp; &quot;ok&quot;&nbsp;&#39;hi&#39;</i>
+
+            00:05.000 --> 00:08.000
+            <v Alice>Value <00:05.500>is x < 5 and y > 2</v>
+        """.trimIndent()
+
+        val parsed = SubtitleParser.parse(vtt.toByteArray(Charsets.UTF_8), "math.vtt")
+        assertEquals(2, parsed.allCues.size)
+        assertEquals("x < 5 and y > 2 & \"ok\" 'hi'", parsed.allCues[0].cleanText)
+        assertEquals("Value is x < 5 and y > 2", parsed.allCues[1].cleanText)
+    }
+
+    @Test
+    fun stripsUppercaseAssDrawingTags() {
+        val ass = """
+            [Script Info]
+            Title: Uppercase Draw
+
+            [Events]
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:02.00,0:00:05.00,Signs,,0,0,0,,{\P1}m 0 0 l 50 50{\P0}Dialog
+        """.trimIndent()
+
+        val parsed = SubtitleParser.parse(ass.toByteArray(Charsets.UTF_8), "upper.ass")
+        assertEquals(1, parsed.allCues.size)
+        assertEquals("Dialog", parsed.allCues[0].cleanText)
+    }
 }

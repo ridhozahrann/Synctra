@@ -243,7 +243,7 @@ data class SyncResult(
     val source: SyncResultSource = SyncResultSource.STANDARD,
 ) {
     val offsetSeconds: Double get() = offsetMs / 1000.0
-    val isAlreadySynced: Boolean get() = kotlin.math.abs(offsetMs) <= 150L
+    val isAlreadySynced: Boolean get() = kotlin.math.abs(offsetMs) <= 150L && drift.severity == DriftSeverity.NONE
 }
 
 data class MediaTrackInfo(

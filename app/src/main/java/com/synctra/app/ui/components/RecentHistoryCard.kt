@@ -72,7 +72,7 @@ fun RecentHistoryCard(
             Column(modifier = Modifier.fillMaxWidth()) {
                 entries.forEachIndexed { idx, entry ->
                     val signedSec = "${formatSignedSeconds(entry.offsetMs)}s"
-                    val isSynced = abs(entry.offsetMs) <= 150L
+                    val isSynced = abs(entry.offsetMs) <= 150L && !entry.hasDrift
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -104,7 +104,11 @@ fun RecentHistoryCard(
                         Spacer(modifier = Modifier.width(10.dp))
 
                         Text(
-                            text = if (isSynced) strings.syncedStatus else signedSec,
+                            text = when {
+                                isSynced -> strings.syncedStatus
+                                entry.hasDrift && abs(entry.offsetMs) <= 150L -> "Drift"
+                                else -> signedSec
+                            },
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             fontFamily = FontFamily.Monospace,

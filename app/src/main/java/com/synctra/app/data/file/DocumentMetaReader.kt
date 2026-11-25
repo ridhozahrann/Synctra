@@ -3,7 +3,9 @@ package com.synctra.app.data.file
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 
 data class SelectedFileInfo(
     val uri: Uri,
@@ -47,13 +49,25 @@ object DocumentMetaReader {
     fun readAllBytes(context: Context, uri: Uri, maxBytes: Long = 10L * 1024L * 1024L): ByteArray {
         val stream = context.contentResolver.openInputStream(uri)
             ?: throw IOException("Tidak bisa membuka file yang dipilih.")
-        return stream.use { input ->
-            val bytes = input.readBytes()
-            if (bytes.size > maxBytes) {
+        return stream.use { input -> readBoundedBytes(input, maxBytes) }
+    }
+
+    @Throws(IOException::class)
+    internal fun readBoundedBytes(input: InputStream, maxBytes: Long): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var totalRead = 0L
+        while (true) {
+            val read = input.read(buf)
+            if (read < 0) break
+            if (read == 0) continue
+            totalRead += read
+            if (totalRead > maxBytes) {
                 throw IOException("File subtitle terlalu besar (> ${maxBytes / (1024 * 1024)} MB).")
             }
-            bytes
+            out.write(buf, 0, read)
         }
+        return out.toByteArray()
     }
 
     @Throws(IOException::class)

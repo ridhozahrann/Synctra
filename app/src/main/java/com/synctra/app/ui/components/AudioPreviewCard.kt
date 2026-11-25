@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +40,7 @@ import com.synctra.app.domain.model.WindowSyncResult
 import com.synctra.app.ui.i18n.AppStrings
 import com.synctra.app.ui.theme.SynctraColors
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AudioPreviewCard(
     strings: AppStrings,
@@ -60,6 +63,9 @@ fun AudioPreviewCard(
     } else {
         0f
     }
+    val showSubtitle = previewState.isPlaying &&
+        !previewState.isBuffering &&
+        !activeSubtitleText.isNullOrBlank()
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -89,28 +95,31 @@ fun AudioPreviewCard(
                     }
                 }
 
-                if (windows.size > 1) {
+                if (windows.size in 2..3) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         windows.forEachIndexed { idx, _ ->
-                            val selected = idx == selectedWindowIndex
-                            Surface(
+                            WindowChip(
+                                label = strings.windowShortLabel(idx, windows.size),
+                                selected = idx == selectedWindowIndex,
                                 onClick = { onSelectWindow(idx) },
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (selected) SynctraColors.SurfaceSubtle else SynctraColors.Surface,
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (selected) SynctraColors.Accent else SynctraColors.Hairline,
-                                ),
-                            ) {
-                                Text(
-                                    text = strings.windowShortLabel(idx, windows.size),
-                                    fontSize = 11.sp,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (selected) SynctraColors.InkPrimary else SynctraColors.InkMuted,
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                )
-                            }
+                            )
                         }
+                    }
+                }
+            }
+
+            if (windows.size > 3) {
+                Spacer(modifier = Modifier.height(10.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    windows.forEachIndexed { idx, _ ->
+                        WindowChip(
+                            label = strings.windowShortLabel(idx, windows.size),
+                            selected = idx == selectedWindowIndex,
+                            onClick = { onSelectWindow(idx) },
+                        )
                     }
                 }
             }
@@ -134,13 +143,13 @@ fun AudioPreviewCard(
                     Text(
                         text = when {
                             previewState.isBuffering -> strings.loadingAudio
-                            !activeSubtitleText.isNullOrBlank() -> activeSubtitleText
+                            showSubtitle -> activeSubtitleText!!
                             previewState.isPlaying -> "—"
                             else -> strings.pressPlayHint
                         },
-                        fontSize = if (!activeSubtitleText.isNullOrBlank()) 16.sp else 13.sp,
-                        fontWeight = if (!activeSubtitleText.isNullOrBlank()) FontWeight.Medium else FontWeight.Normal,
-                        color = if (!activeSubtitleText.isNullOrBlank()) {
+                        fontSize = if (showSubtitle) 16.sp else 13.sp,
+                        fontWeight = if (showSubtitle) FontWeight.Medium else FontWeight.Normal,
+                        color = if (showSubtitle) {
                             SynctraColors.InkPrimary
                         } else {
                             SynctraColors.InkMuted
@@ -296,6 +305,31 @@ private fun StepperCell(
                 enabled -> SynctraColors.InkPrimary
                 else -> SynctraColors.InkMuted
             },
+        )
+    }
+}
+
+@Composable
+private fun WindowChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = if (selected) SynctraColors.SurfaceSubtle else SynctraColors.Surface,
+        border = BorderStroke(
+            1.dp,
+            if (selected) SynctraColors.Accent else SynctraColors.Hairline,
+        ),
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) SynctraColors.InkPrimary else SynctraColors.InkMuted,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
         )
     }
 }

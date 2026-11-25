@@ -365,6 +365,7 @@ object SyncAnalyzer {
         offsetMs: Long,
         cues: List<SubtitleCue>,
         drift: DriftAssessment? = null,
+        manualNudgeMs: Long = 0L,
     ): Long {
         val winStart = window.window.startMs
         val winEnd = (window.window.endMs - 10_000L).coerceAtLeast(winStart)
@@ -376,7 +377,7 @@ object SyncAnalyzer {
         var pos = winStart
         while (pos <= winEnd) {
             val subStart = if (drift != null && drift.isLinearStretch && drift.severity != DriftSeverity.NONE) {
-                audioTimeToOriginalSubtitleTime(pos, drift, manualNudgeMs = 0L)
+                audioTimeToOriginalSubtitleTime(pos, drift, manualNudgeMs = manualNudgeMs)
             } else {
                 pos - offsetMs
             }
@@ -400,7 +401,7 @@ object SyncAnalyzer {
         drift: DriftAssessment,
         manualNudgeMs: Long,
     ): Long {
-        val s = drift.speedRatio
+        val s = 1.0 + drift.slopeMsPerMs
         if (abs(s - 1.0) < 1e-7) {
             return audioPosMs - (drift.anchorOffsetMs + manualNudgeMs)
         }

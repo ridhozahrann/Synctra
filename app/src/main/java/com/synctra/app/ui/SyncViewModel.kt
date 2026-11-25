@@ -92,6 +92,10 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         )
     )
     private var analysisJob: Job? = null
+    private var videoProbeJob: Job? = null
+    private var subtitleLoadJob: Job? = null
+    @Volatile
+    private var analysisGeneration: Long = 0L
     private var pendingExportOptions: ExportSrtOptions? = null
     private var lastSubtitleBytes: ByteArray? = null
     private var lastExtractedWindows: List<WindowAudioInput> = emptyList()
@@ -101,7 +105,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         internalState,
         previewPlayer.state,
     ) { state, preview ->
-        val activeLine = if (state.result != null && state.parsedSubtitle != null) {
+        val activeLine = if (
+            preview.isPlaying &&
+            !preview.isBuffering &&
+            state.result != null &&
+            state.parsedSubtitle != null
+        ) {
             findActiveSubtitleText(
                 cues = state.parsedSubtitle.allCues,
                 audioPosMs = preview.currentPositionMs,
@@ -135,11 +144,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onVideoSelected(uri: Uri) {
         previewPlayer.stop()
+        analysisGeneration++
         analysisJob?.cancel()
+        analysisJob = null
+        videoProbeJob?.cancel()
         lastExtractedWindows = emptyList()
         lastExportedSrtUri = null
 
-        viewModelScope.launch {
+        videoProbeJob = viewModelScope.launch {
             val info = withContext(Dispatchers.IO) {
                 DocumentMetaReader.readInfo(appContext, uri)
             }
@@ -149,6 +161,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     videoMeta = null,
                     isProbingVideo = true,
                     selectedAudioTrackIndex = 0,
+                    isAnalyzing = false,
+                    progress = null,
                     result = null,
                     manualNudgeMs = 0L,
                     exportVerification = null,
@@ -173,6 +187,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }.onFailure { err ->
+                if (err is CancellationException) return@onFailure
                 internalState.update { state ->
                     if (state.videoFile?.uri == uri) {
                         state.copy(
@@ -193,11 +208,16 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         if (audioIndex !in tracks.indices || audioIndex == state.selectedAudioTrackIndex) return
 
         previewPlayer.stop()
+        analysisGeneration++
+        analysisJob?.cancel()
+        analysisJob = null
         lastExtractedWindows = emptyList()
         lastExportedSrtUri = null
         internalState.update {
             it.copy(
                 selectedAudioTrackIndex = audioIndex,
+                isAnalyzing = false,
+                progress = null,
                 result = null,
                 manualNudgeMs = 0L,
                 exportVerification = null,
@@ -208,10 +228,13 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onSubtitleSelected(uri: Uri) {
         previewPlayer.stop()
+        analysisGeneration++
         analysisJob?.cancel()
+        analysisJob = null
+        subtitleLoadJob?.cancel()
         lastExportedSrtUri = null
 
-        viewModelScope.launch {
+        subtitleLoadJob = viewModelScope.launch {
             try {
                 val (info, bytes, parsed) = withContext(Dispatchers.IO) {
                     val fileInfo = DocumentMetaReader.readInfo(appContext, uri)
@@ -233,15 +256,21 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         selectedEncoding = SubtitleEncodingOption.AUTO,
                         parsedSubtitle = parsed,
                         cleanedPreviewStats = cleaned,
+                        isAnalyzing = false,
+                        progress = null,
                         result = null,
                         manualNudgeMs = 0L,
                         exportVerification = null,
                         errorMessage = null,
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 internalState.update {
                     it.copy(
+                        isAnalyzing = false,
+                        progress = null,
                         errorMessage = e.localizedMessage ?: "Gagal membaca file subtitle.",
                     )
                 }
@@ -255,10 +284,13 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         if (option == state.selectedEncoding) return
 
         previewPlayer.stop()
+        analysisGeneration++
         analysisJob?.cancel()
+        analysisJob = null
+        subtitleLoadJob?.cancel()
         lastExportedSrtUri = null
 
-        viewModelScope.launch {
+        subtitleLoadJob = viewModelScope.launch {
             try {
                 val parsed = withContext(Dispatchers.IO) {
                     val bytes = lastSubtitleBytes ?: DocumentMetaReader.readAllBytes(appContext, subFile.uri).also {
@@ -278,22 +310,36 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 internalState.update { cur ->
-                    val cleaned = recomputeCleaning(parsed, cur.videoMeta?.durationMs ?: 0L)
-                    cur.copy(
-                        selectedEncoding = option,
-                        parsedSubtitle = parsed,
-                        cleanedPreviewStats = cleaned,
-                        result = null,
-                        manualNudgeMs = 0L,
-                        exportVerification = null,
-                        errorMessage = null,
-                    )
+                    if (cur.subtitleFile?.uri != subFile.uri) {
+                        cur
+                    } else {
+                        val cleaned = recomputeCleaning(parsed, cur.videoMeta?.durationMs ?: 0L)
+                        cur.copy(
+                            selectedEncoding = option,
+                            parsedSubtitle = parsed,
+                            cleanedPreviewStats = cleaned,
+                            isAnalyzing = false,
+                            progress = null,
+                            result = null,
+                            manualNudgeMs = 0L,
+                            exportVerification = null,
+                            errorMessage = null,
+                        )
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                internalState.update {
-                    it.copy(
-                        errorMessage = e.localizedMessage ?: "Gagal membaca subtitle dengan encoding ${option.label}.",
-                    )
+                internalState.update { cur ->
+                    if (cur.subtitleFile?.uri != subFile.uri) {
+                        cur
+                    } else {
+                        cur.copy(
+                            isAnalyzing = false,
+                            progress = null,
+                            errorMessage = e.localizedMessage ?: "Gagal membaca subtitle dengan encoding ${option.label}.",
+                        )
+                    }
                 }
             }
         }
@@ -309,10 +355,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
         previewPlayer.stop()
         analysisJob?.cancel()
+        val gen = ++analysisGeneration
 
         analysisJob = viewModelScope.launch {
             val startedAt = SystemClock.elapsedRealtime()
             internalState.update {
+                if (analysisGeneration != gen) return@update it
                 it.copy(
                     isAnalyzing = true,
                     result = null,
@@ -350,6 +398,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     internalState.update {
+                        if (analysisGeneration != gen) return@update it
                         it.copy(
                             videoMeta = mediaInfo,
                             parsedSubtitle = parsed,
@@ -369,11 +418,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         uri = videoFile.uri,
                         windows = windows,
                         selectedAudioIndex = selectedTrack.audioIndex,
-                        isCancelled = { !isActive },
+                        isCancelled = { !isActive || analysisGeneration != gen },
                     ) { idx, total, _ ->
                         val frac = 0.15f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.55f
                         val winName = strings.windowShortLabel(idx, total)
                         internalState.update {
+                            if (analysisGeneration != gen) return@update it
                             it.copy(
                                 progress = SyncProgress(
                                     stepTitle = strings.stepSampling(idx + 1, total),
@@ -385,6 +435,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     internalState.update {
+                        if (analysisGeneration != gen) return@update it
                         it.copy(
                             progress = SyncProgress(
                                 stepTitle = strings.stepCorrelating,
@@ -400,6 +451,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         dialogueCues = cleaned.dialogueCues,
                         onExpandingSearch = {
                             internalState.update {
+                                if (analysisGeneration != gen) return@update it
                                 it.copy(
                                     progress = SyncProgress(
                                         stepTitle = strings.stepExpanding,
@@ -422,6 +474,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         if (extraWindows.isNotEmpty()) {
                             internalState.update {
+                                if (analysisGeneration != gen) return@update it
                                 it.copy(
                                     progress = SyncProgress(
                                         stepTitle = strings.stepExtraSampling,
@@ -434,10 +487,11 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                                 uri = videoFile.uri,
                                 windows = extraWindows,
                                 selectedAudioIndex = selectedTrack.audioIndex,
-                                isCancelled = { !isActive },
+                                isCancelled = { !isActive || analysisGeneration != gen },
                             ) { idx, total, _ ->
                                 val frac = 0.87f + (idx.toFloat() / total.coerceAtLeast(1)) * 0.08f
                                 internalState.update {
+                                    if (analysisGeneration != gen) return@update it
                                     it.copy(
                                         progress = SyncProgress(
                                             stepTitle = strings.stepExtraSampling,
@@ -480,6 +534,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     Triple(aggregated, selectedTrack.audioIndex, audioInputs)
                 }
 
+                if (analysisGeneration != gen) return@launch
+
                 lastExtractedWindows = extractedInputs
                 lastExportedSrtUri = null
 
@@ -501,6 +557,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 internalState.update {
+                    if (analysisGeneration != gen) return@update it
                     it.copy(
                         isAnalyzing = false,
                         progress = null,
@@ -511,22 +568,27 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } catch (_: CancellationException) {
-                internalState.update {
-                    it.copy(isAnalyzing = false, progress = null)
+                if (analysisGeneration == gen) {
+                    internalState.update {
+                        it.copy(isAnalyzing = false, progress = null)
+                    }
                 }
             } catch (e: Exception) {
-                internalState.update {
-                    it.copy(
-                        isAnalyzing = false,
-                        progress = null,
-                        errorMessage = e.localizedMessage ?: "Failed to analyze files.",
-                    )
+                if (analysisGeneration == gen) {
+                    internalState.update {
+                        it.copy(
+                            isAnalyzing = false,
+                            progress = null,
+                            errorMessage = e.localizedMessage ?: "Failed to analyze files.",
+                        )
+                    }
                 }
             }
         }
     }
 
     fun cancelAnalysis() {
+        analysisGeneration++
         analysisJob?.cancel()
         analysisJob = null
         internalState.update { it.copy(isAnalyzing = false, progress = null) }
@@ -562,7 +624,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val state = internalState.value
         val parsed = state.parsedSubtitle ?: return
-        val result = state.result ?: return
+        val targetResult = state.result ?: return
         val mediaDurationMs = state.videoMeta?.durationMs ?: 0L
         val cachedWindows = lastExtractedWindows
 
@@ -574,7 +636,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                         offsetMs = state.effectiveOffsetMs,
                         excludedCueIndices = options.excludedCueIndices,
                         applyDriftCorrection = options.applyDriftCorrection,
-                        drift = result.drift,
+                        drift = targetResult.drift,
                         manualNudgeMs = state.manualNudgeMs,
                     )
                     DocumentMetaReader.writeUtf8Text(appContext, destinationUri, exportResult.content)
@@ -588,8 +650,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     }.getOrNull()
                     Triple(exportResult.writtenCount, removed, verify)
                 }
-                lastExportedSrtUri = destinationUri
-                internalState.update { it.copy(exportVerification = verification) }
+                if (internalState.value.result === targetResult) {
+                    lastExportedSrtUri = destinationUri
+                    internalState.update { cur ->
+                        if (cur.result === targetResult) cur.copy(exportVerification = verification) else cur
+                    }
+                }
                 onSaved(keptCount, removedCount)
             } catch (e: Exception) {
                 internalState.update {
@@ -600,10 +666,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reverifyLastExport() {
+        val state = internalState.value
+        val targetResult = state.result ?: return
         val uri = lastExportedSrtUri ?: return
         val cachedWindows = lastExtractedWindows
         if (cachedWindows.isEmpty()) return
-        val mediaDurationMs = internalState.value.videoMeta?.durationMs ?: 0L
+        val mediaDurationMs = state.videoMeta?.durationMs ?: 0L
 
         viewModelScope.launch {
             val verify = withContext(Dispatchers.IO) {
@@ -613,7 +681,9 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 }.getOrNull()
             }
             if (verify != null) {
-                internalState.update { it.copy(exportVerification = verify) }
+                internalState.update { cur ->
+                    if (cur.result === targetResult) cur.copy(exportVerification = verify) else cur
+                }
             }
         }
     }
@@ -702,6 +772,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 offsetMs = state.effectiveOffsetMs,
                 cues = cues,
                 drift = result.drift,
+                manualNudgeMs = state.manualNudgeMs,
             )
         } else {
             result.recommendedPreviewAudioMs
@@ -728,6 +799,9 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        analysisGeneration++
+        videoProbeJob?.cancel()
+        subtitleLoadJob?.cancel()
         analysisJob?.cancel()
         previewPlayer.release()
         super.onCleared()

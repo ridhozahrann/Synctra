@@ -174,4 +174,72 @@ class SyncAnalyzerTest {
         assertTrue(text.contains("+1200 ms"))
         assertTrue(text.contains("Export verify: residual=-20ms"))
     }
+
+    @Test
+    fun audioTimeToOriginalSubtitleTimeMatchesSrtExporterWithDriftMsPerHour() {
+        val drift = com.synctra.app.domain.model.DriftAssessment(
+            severity = DriftSeverity.MILD,
+            driftMsPerHour = 3_600.0,
+            spreadMs = 3_600L,
+            suspectedCause = null,
+            anchorTimeMs = 2_400_000L,
+            anchorOffsetMs = 1_000L,
+            speedRatio = 1.0,
+            isLinearStretch = true,
+        )
+        val origSubMs = 4_200_000L
+        val nudgeMs = 250L
+        val cue = SubtitleCue(1, origSubMs, origSubMs + 3_000L, "Test", "Test")
+        val exported = com.synctra.app.domain.subtitle.SrtExporter.exportSrt(
+            allCues = listOf(cue),
+            offsetMs = 1_000L,
+            applyDriftCorrection = true,
+            drift = drift,
+            manualNudgeMs = nudgeMs,
+        )
+        val reparsed = com.synctra.app.domain.subtitle.SubtitleParser.parse(
+            exported.toByteArray(Charsets.UTF_8),
+            "out.srt",
+        )
+        val exportedStartMs = reparsed.allCues.first().startMs
+        val recoveredOrigMs = SyncAnalyzer.audioTimeToOriginalSubtitleTime(
+            audioPosMs = exportedStartMs,
+            drift = drift,
+            manualNudgeMs = nudgeMs,
+        )
+        assertTrue(
+            "Expected recovered subtitle time near $origSubMs, got $recoveredOrigMs",
+            abs(recoveredOrigMs - origSubMs) <= 2L,
+        )
+    }
+
+    @Test
+    fun pickPreviewTimestampRespectsManualNudgeUnderLinearDrift() {
+        val drift = com.synctra.app.domain.model.DriftAssessment(
+            severity = DriftSeverity.SEVERE,
+            driftMsPerHour = 150_000.0,
+            spreadMs = 50_000L,
+            suspectedCause = null,
+            anchorTimeMs = 0L,
+            anchorOffsetMs = 0L,
+            speedRatio = 25.0 / (24_000.0 / 1001.0),
+            isLinearStretch = true,
+        )
+        val window = SampleWindow(0, "Awal", 1_000_000L, 60_000L)
+        val wr = WindowSyncResult(window, offsetMs = 42_000L, confidence = 0.85f, peakProminence = 5.0f, speechRatio = 0.4f)
+        // Place cues around t_audio = 1_040_000 when nudge = +15_000ms
+        val targetSubBase = SyncAnalyzer.audioTimeToOriginalSubtitleTime(1_040_000L, drift, manualNudgeMs = 15_000L)
+        val cues = List(4) { i ->
+            val s = targetSubBase + i * 1_800L
+            SubtitleCue(i + 1, s, s + 1_200L, "Line $i", "Line $i")
+        }
+        val picked = SyncAnalyzer.pickPreviewTimestamp(
+            window = wr,
+            offsetMs = 42_000L,
+            cues = cues,
+            drift = drift,
+            manualNudgeMs = 15_000L,
+        )
+        assertTrue("Expected preview timestamp near 1_040_000ms, got $picked", picked in 1_030_000L..1_045_000L)
+    }
 }
